@@ -5870,9 +5870,37 @@ def cmd_attention_hook(args):
 
 def cmd_sim(args):
     """Runtime controls for the Sim supervisory check-in."""
-    store = _store(args)
-    cfg = _config(args)
     action = getattr(args, "sim_action", "status")
+    conversation = getattr(args, "conversation_id", None)
+    explicit_store = getattr(args, "store_scope", False)
+    from .adaptive_sim import _scope
+    _scope(conversation)
+    if action in {"attention", "backoff", "clear-control"} and (bool(conversation) == bool(explicit_store)):
+        raise ValueError("exactly one of --store or --conversation-id is required")
+    if action == "ack" and (not conversation or explicit_store or not getattr(args, "review_id", None)):
+        raise ValueError("ack requires --conversation-id and --review-id")
+    cfg = _config(args)
+    if action in {"attention", "backoff"}:
+        duration = getattr(args, "duration_seconds", None)
+        if type(duration) is not int or not 1 <= duration <= cfg.sim.adaptive.max_override_seconds:
+            raise ValueError("invalid_duration_seconds")
+    store = _store(args)
+    if action in {"attention", "backoff", "clear-control", "ack", "control-status"}:
+        from . import adaptive_sim as adaptive
+        try:
+            if action in {"attention", "backoff"}:
+                result = adaptive.set_override(store, cfg, mode=action, duration_seconds=args.duration_seconds,
+                                               conversation_id=conversation)
+            elif action == "clear-control":
+                result = adaptive.clear_override(store, conversation_id=conversation)
+            elif action == "ack":
+                result = adaptive.acknowledge_advice(store, conversation_id=conversation, review_id=args.review_id)
+            else:
+                result = adaptive.control_status(store, cfg, conversation_id=conversation)
+            print(_dumps(result, indent=2))
+        finally:
+            store.close()
+        return
 
     from .sim import (
         call_sim,
@@ -5941,8 +5969,9 @@ def cmd_sim(args):
             from .budget import BudgetLedger
             ledger = BudgetLedger(cfg.ledger_path, cfg.budget)
         grounding = build_sim_grounding(store, text, cfg)
-        result, acct = call_sim(
-            cfg, ledger, text, "sim-check", client=None,
+        from .sim import controlled_sim_check
+        result, acct = controlled_sim_check(
+            store, cfg, ledger, text, conversation or "sim-check", client=None,
             guidance=get_sim_guidance(store),
             grounding=grounding,
             intent=_capture_intent(store),
@@ -8100,10 +8129,15 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("sim", help="Sim supervisory check-in runtime controls")
     s.add_argument("sim_action", nargs="?", default="status",
                    choices=["status", "on", "off", "enable", "disable", "inherit",
-                            "check", "drain", "guidance"],
+                            "check", "drain", "guidance", "attention", "backoff", "clear-control", "ack", "control-status"],
                    help="Action: status, on/off (kill switch), inherit, check, drain, guidance")
     s.add_argument("--text", help="Window for `check`, or guidance text for `guidance`")
     s.add_argument("--clear", action="store_true", help="With `guidance`: clear it")
+    scope = s.add_mutually_exclusive_group()
+    scope.add_argument("--conversation-id")
+    scope.add_argument("--store", dest="store_scope", action="store_true")
+    s.add_argument("--duration-seconds", type=int)
+    s.add_argument("--review-id")
     _common(s)
     s.set_defaults(func=cmd_sim)
 

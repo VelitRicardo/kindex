@@ -625,6 +625,27 @@ class AdvocateConfig(BaseModel):
     timeout: int = 300             # subprocess timeout for the Advocate run
 
 
+class AdaptiveSimConfig(BaseModel):
+    """Finite store-local scheduling controls; cadence remains opt-in."""
+    enabled: bool = False
+    min_interval_seconds: int = Field(default=60, ge=1, le=86400, strict=True)
+    base_interval_seconds: int = Field(default=300, ge=1, le=86400, strict=True)
+    max_interval_seconds: int = Field(default=3600, ge=1, le=86400, strict=True)
+    quiet_hysteresis: int = Field(default=2, ge=1, le=1000, strict=True)
+    jitter_fraction: float = Field(default=0.1, ge=0, le=0.5, allow_inf_nan=False)
+    failure_threshold: int = Field(default=3, ge=1, le=1000, strict=True)
+    circuit_cooldown_seconds: int = Field(default=300, ge=1, le=86400, strict=True)
+    advice_ttl_seconds: int = Field(default=900, ge=1, le=86400, strict=True)
+    max_override_seconds: int = Field(default=86400, ge=1, le=86400, strict=True)
+    max_receipts: int = Field(default=200, ge=1, le=10000, strict=True)
+
+    @model_validator(mode="after")
+    def interval_order(self):
+        if not self.min_interval_seconds <= self.base_interval_seconds <= self.max_interval_seconds:
+            raise ValueError("adaptive intervals must satisfy min <= base <= max")
+        return self
+
+
 class SimConfig(BaseModel):
     """Optional async Sim (Jeremy-simulacrum) supervisory check-in.
 
@@ -646,6 +667,7 @@ class SimConfig(BaseModel):
     decision) self-assess `stakes` and may recommend — or, if `advocate.enabled`,
     run — a deeper Advocate/Helland review.
     """
+    adaptive: AdaptiveSimConfig = Field(default_factory=AdaptiveSimConfig)
     backend: Literal["api", "antigravity", "codex", "claude", "ollama"] = "api"
     agent_model: str = ""
     agent_effort: Literal["low", "medium", "high"] = "low"

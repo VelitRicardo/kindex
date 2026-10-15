@@ -23,6 +23,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -601,6 +602,24 @@ def _ensure_vector_meta_table(store: Store) -> None:
     )
 
 
+@contextmanager
+def _embedding_savepoint(store: Store):
+    """Commit only owned work, or roll back this scope inside caller work."""
+    conn = store.conn
+    conn.execute("SAVEPOINT kindex_embedding")
+    try:
+        yield
+        conn.execute("RELEASE kindex_embedding")
+    except BaseException:
+        # SQLite may already have aborted a transaction after an I/O error.
+        if conn.in_transaction:
+            try:
+                conn.execute("ROLLBACK TO kindex_embedding")
+            finally:
+                conn.execute("RELEASE kindex_embedding")
+        raise
+
+
 def ensure_vec_table(store: Store) -> bool:
     """Create the vector table if sqlite-vec is available.
 
@@ -636,51 +655,60 @@ def ensure_vec_table(store: Store) -> bool:
         sqlite_vec.load(store.conn)
         store.conn.enable_load_extension(False)
 
-        # Check if dimension changed (provider switch)
-        store.conn.execute(
-            "CREATE TABLE IF NOT EXISTS vec_meta (key TEXT PRIMARY KEY, value TEXT)"
-        )
-        row = store.conn.execute(
-            "SELECT value FROM vec_meta WHERE key = 'embedding_dim'"
-        ).fetchone()
-        stored_dim = int(row[0]) if row else None
-        fp_row = store.conn.execute(
-            "SELECT value FROM vec_meta WHERE key = 'embedding_fingerprint'"
-        ).fetchone()
-        stored_fingerprint = fp_row[0] if fp_row else None
-        table_exists = store.conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='node_vectors'"
-        ).fetchone() is not None
-
-        if ((stored_dim and stored_dim != dim)
-                or (table_exists and stored_fingerprint != fingerprint)):
-            reason = f"dimension changed ({stored_dim} -> {dim})"
-            if table_exists and stored_fingerprint != fingerprint:
-                reason = "embedding provider/model/strategy changed"
-            print(f"{reason}. Recreating vector table.", file=sys.stderr)
-            store.conn.execute("DROP TABLE IF EXISTS node_vectors")
-            store.conn.execute("DROP TABLE IF EXISTS node_vector_meta")
-
-        store.conn.execute(f"""
-            CREATE VIRTUAL TABLE IF NOT EXISTS node_vectors USING vec0(
-                node_id TEXT PRIMARY KEY,
-                embedding float[{dim}]
+        with _embedding_savepoint(store):
+            # Check if dimension changed (provider switch)
+            store.conn.execute(
+                "CREATE TABLE IF NOT EXISTS vec_meta (key TEXT PRIMARY KEY, value TEXT)"
             )
-        """)
-        _ensure_vector_meta_table(store)
-        store.conn.execute(
-            "INSERT OR REPLACE INTO vec_meta (key, value) VALUES ('embedding_dim', ?)",
-            (str(dim),),
-        )
-        store.conn.execute(
-            "INSERT OR REPLACE INTO vec_meta (key, value) "
-            "VALUES ('embedding_fingerprint', ?)",
-            (fingerprint,),
-        )
-        store.conn.commit()
+            row = store.conn.execute(
+                "SELECT value FROM vec_meta WHERE key = 'embedding_dim'"
+            ).fetchone()
+            stored_dim = int(row[0]) if row else None
+            fp_row = store.conn.execute(
+                "SELECT value FROM vec_meta WHERE key = 'embedding_fingerprint'"
+            ).fetchone()
+            stored_fingerprint = fp_row[0] if fp_row else None
+            table_exists = store.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='node_vectors'"
+            ).fetchone() is not None
+
+            # A compatible existing index needs no writes during search or before
+            # a provider call. Schema repair remains transactional below.
+            if (table_exists and stored_dim == dim and stored_fingerprint == fingerprint
+                    and store.conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' "
+                        "AND name='node_vector_meta'"
+                    ).fetchone() is not None):
+                return True
+
+            if ((stored_dim and stored_dim != dim)
+                    or (table_exists and stored_fingerprint != fingerprint)):
+                reason = f"dimension changed ({stored_dim} -> {dim})"
+                if table_exists and stored_fingerprint != fingerprint:
+                    reason = "embedding provider/model/strategy changed"
+                print(f"{reason}. Recreating vector table.", file=sys.stderr)
+                store.conn.execute("DROP TABLE IF EXISTS node_vectors")
+                store.conn.execute("DROP TABLE IF EXISTS node_vector_meta")
+
+            store.conn.execute(f"""
+                CREATE VIRTUAL TABLE IF NOT EXISTS node_vectors USING vec0(
+                    node_id TEXT PRIMARY KEY,
+                    embedding float[{dim}]
+                )
+            """)
+            _ensure_vector_meta_table(store)
+            store.conn.execute(
+                "INSERT OR REPLACE INTO vec_meta (key, value) VALUES ('embedding_dim', ?)",
+                (str(dim),),
+            )
+            store.conn.execute(
+                "INSERT OR REPLACE INTO vec_meta (key, value) "
+                "VALUES ('embedding_fingerprint', ?)",
+                (fingerprint,),
+            )
         return True
     except Exception as e:
-        print(f"Warning: Could not initialize vector table: {e}", file=sys.stderr)
+        print(f"Warning: Could not initialize vector table: {safe_error(e)}", file=sys.stderr)
         return False
 
 
@@ -754,17 +782,21 @@ def embed_document_chunks(text: str, config: Config | None = None) -> list[dict]
 
 
 def _upsert_embedding_outcome(store: Store, node_id: str, text: str) -> _EmbeddingOutcome:
-    """Compute embeddings and retain the reason a queue item could not run."""
-    if not ensure_vec_table(store):
+    """Compute a generation before atomically replacing its stored chunks."""
+    if not _check_vec():
         return _EmbeddingOutcome(False, kind="backend_unavailable",
                                  message="Vector backend unavailable")
 
+    # No write transaction is acquired around provider I/O. In particular,
+    # provider/model changes must not discard the old index before this succeeds.
     try:
         chunks = _embed_document_chunks(text, store.config, embed_one=_embed_text_or_raise)
     except _EmbeddingProviderError as e:
         return _EmbeddingOutcome(False, terminal=e.kind == "input_too_large",
                                  kind=e.kind, http_status=e.http_status,
                                  message=safe_error(e))
+    except Exception as e:
+        return _EmbeddingOutcome(False, kind="embedding_error", message=safe_error(e))
     if not chunks:
         return _EmbeddingOutcome(False, kind="embedding_unavailable",
                                  message="Embedding provider returned no vector")
@@ -774,28 +806,47 @@ def _upsert_embedding_outcome(store: Store, node_id: str, text: str) -> _Embeddi
         strategy = embedding_strategy(store.config)
         now = _now_iso()
         count = len(chunks)
-        delete_embedding(store, node_id, clear_quarantine=False)
-        _ensure_vector_meta_table(store)
+        dim = _get_embedding_dim(store.config)
+        prepared = []
         for chunk in chunks:
+            embedding = chunk["embedding"]
+            if len(embedding) != dim or not all(math.isfinite(value) for value in embedding):
+                raise ValueError("Embedding has invalid dimensions or non-finite values")
             index = int(chunk["index"])
-            vector_id = _chunk_vector_id(node_id, index, count)
-            store.conn.execute(
-                "INSERT OR REPLACE INTO node_vectors (node_id, embedding) VALUES (?, ?)",
-                (vector_id, _serialize_vec(chunk["embedding"])),
-            )
-            store.conn.execute(
-                """INSERT OR REPLACE INTO node_vector_meta
-                   (vector_id, node_id, chunk_index, chunk_count, text_hash,
-                    fingerprint, strategy, token_estimate, text_preview, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    vector_id, node_id, index, count, chunk.get("text_hash") or "",
-                    fingerprint, strategy, int(chunk.get("token_estimate") or 0),
-                    (chunk.get("text") or "")[:240], now,
-                ),
-            )
-        store.conn.commit()
-        _clear_embedding_quarantine(store, node_id)
+            prepared.append((
+                _chunk_vector_id(node_id, index, count), index,
+                _serialize_vec(embedding), chunk.get("text_hash") or "",
+                int(chunk.get("token_estimate") or 0), (chunk.get("text") or "")[:240],
+            ))
+        if len({item[0] for item in prepared}) != count:
+            raise ValueError("Embedding chunk indices must be distinct")
+
+        with _embedding_savepoint(store):
+            if not ensure_vec_table(store):
+                raise RuntimeError("Vector backend unavailable")
+            old_ids = [node_id, *(row["vector_id"] for row in store.conn.execute(
+                "SELECT vector_id FROM node_vector_meta WHERE node_id = ?", (node_id,)
+            ))]
+            for vector_id in dict.fromkeys(old_ids):
+                store.conn.execute("DELETE FROM node_vectors WHERE node_id = ?", (vector_id,))
+            store.conn.execute("DELETE FROM node_vector_meta WHERE node_id = ?", (node_id,))
+            for vector_id, index, vector, text_hash, tokens, preview in prepared:
+                store.conn.execute(
+                    "INSERT OR REPLACE INTO node_vectors (node_id, embedding) VALUES (?, ?)",
+                    (vector_id, vector),
+                )
+                store.conn.execute(
+                    """INSERT OR REPLACE INTO node_vector_meta
+                       (vector_id, node_id, chunk_index, chunk_count, text_hash,
+                        fingerprint, strategy, token_estimate, text_preview, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (vector_id, node_id, index, count, text_hash, fingerprint,
+                     strategy, tokens, preview, now),
+                )
+            quarantine = _load_embedding_quarantine(store)
+            if node_id in quarantine:
+                quarantine.pop(node_id)
+                _write_embedding_quarantine(store, quarantine, commit=False)
         return _EmbeddingOutcome(True)
     except Exception as e:
         return _EmbeddingOutcome(False, kind="storage_error", message=safe_error(e))
@@ -896,41 +947,38 @@ def _node_matches_embedding_text(store: Store, node_id: str, text_hash: str) -> 
 
 def _persist_drain_delta(
     store: Store,
-    remaining: list[str],
+    retry: dict[str, str],
     completed: dict[str, str],
     terminal: dict[str, _EmbeddingQuarantineRecord],
 ) -> tuple[list[str], dict[str, _EmbeddingQuarantineRecord]]:
-    """Merge a completed drain into the latest queue state under a write lock.
-
-    Provider calls run outside the lock. At commit, re-check each processed
-    node so an edit or deletion that raced the drain is never overwritten.
-    """
-    conn = store.conn
-    if conn.in_transaction:
-        conn.rollback()
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        queue = _load_embedding_queue(store)
+    """Merge against current input versions, rotating transient failures last."""
+    with _embedding_savepoint(store):
+        # Acquire the write lock before reading the queue to merge. Provider
+        # calls have already finished; unrelated caller work keeps its owner.
+        store.conn.execute("UPDATE meta SET value = value WHERE key = ?", (EMBED_QUEUE_META,))
+        queue = list(dict.fromkeys(node_id for node_id in _load_embedding_queue(store) if node_id))
         quarantine = _load_embedding_quarantine(store)
         unchanged = {
             node_id for node_id, text_hash in completed.items()
             if _node_matches_embedding_text(store, node_id, text_hash)
         }
-        queue = [node_id for node_id in queue if node_id not in unchanged]
-        for node_id in remaining:
-            if node_id not in queue:
-                queue.append(node_id)
+        retry_ids = {
+            node_id for node_id, text_hash in retry.items()
+            if node_id in queue and _node_matches_embedding_text(store, node_id, text_hash)
+        }
+        # New arrivals and unattempted work remain ahead of failed attempts.
+        # IDs removed by another drain are never resurrected from our snapshot.
+        queue = [node_id for node_id in queue
+                 if node_id not in unchanged and node_id not in retry_ids]
+        queue.extend(node_id for node_id in retry if node_id in retry_ids)
         for node_id in unchanged:
             record = terminal.get(node_id)
             if record:
                 quarantine[node_id] = record
             else:
                 quarantine.pop(node_id, None)
-        _write_embedding_meta(store, queue, quarantine, commit=True)
-        return queue, quarantine
-    except BaseException:
-        conn.rollback()
-        raise
+        _write_embedding_meta(store, queue, quarantine, commit=False)
+    return queue, quarantine
 
 
 def _quarantine_matches(
@@ -1077,7 +1125,6 @@ def quarantine_oversized_queue_items(
     if token_limit is None or not diagnosis["oversized"]:
         return _EmbeddingQueueRemediation(**diagnosis, quarantined_now=0)
 
-    queue = _load_embedding_queue(store)
     quarantine = _load_embedding_quarantine(store)
     fingerprint = embedding_fingerprint(effective_config)
     provider = diagnosis["provider"]
@@ -1110,8 +1157,7 @@ def quarantine_oversized_queue_items(
             quarantined_now += 1
         completed[node_id] = text_hash
 
-    remaining = [node_id for node_id in queue if node_id not in completed]
-    _persist_drain_delta(store, remaining, completed, terminal)
+    _persist_drain_delta(store, {}, completed, terminal)
     return _EmbeddingQueueRemediation(**diagnosis, quarantined_now=quarantined_now)
 
 
@@ -1154,7 +1200,7 @@ def drain_embedding_queue(store: Store, config: Config | None = None, *,
 
     # De-dup preserving order; drop falsy ids.
     deduped = list(dict.fromkeys(n for n in queue if n))
-    remaining: list[str] = []
+    retry: dict[str, str] = {}
     completed: dict[str, str] = {}
     terminal: dict[str, _EmbeddingQuarantineRecord] = {}
     embedded = 0
@@ -1163,9 +1209,8 @@ def drain_embedding_queue(store: Store, config: Config | None = None, *,
     deadline = time.monotonic() + time_budget
     fingerprint = embedding_fingerprint(config or store.config)
     provider, model, _, _ = _resolve_embedding_config(config or store.config)
-    for i, node_id in enumerate(deduped):
+    for node_id in deduped:
         if attempts >= max_jobs or time.monotonic() >= deadline:
-            remaining.extend(deduped[i:])  # carry the rest to the next cron
             break
         node = _read_node_for_embedding(store, node_id)
         if not node or node.get("status") == "superseded":
@@ -1215,13 +1260,12 @@ def drain_embedding_queue(store: Store, config: Config | None = None, *,
             completed[node_id] = text_hash
             quarantined += 1
         else:
-            remaining.append(node_id)  # transient (e.g. provider down) — retry
+            retry[node_id] = text_hash  # transient; rotate behind waiting work
     try:
-        remaining, quarantine = _persist_drain_delta(store, remaining, completed, terminal)
+        remaining, quarantine = _persist_drain_delta(store, retry, completed, terminal)
     except Exception:
         # Do not report a drained/quarantined result unless the queue state is
         # durable. The pre-drain metadata is still authoritative after rollback.
-        store.conn.rollback()
         return {"status": "persistence_error", "embedded": embedded,
                 "pending": len(queue), "quarantined": len(_load_embedding_quarantine(store)),
                 "quarantined_this_drain": 0, "drain_complete": False,
@@ -1529,16 +1573,13 @@ def _vector_row_node(store: Store, vector_id: str) -> tuple[str, int | None]:
 
 def vector_search(store: Store, query: str, top_k: int = 10,
                   min_similarity: float | None = None) -> list[dict]:
-    """Search for similar nodes using vector similarity.
+    """Return nearest distinct live nodes, scanning at most 4096 chunks.
 
-    `min_similarity`, when given, drops rows whose cosine similarity falls
-    below it. Without a floor this returns the top-k nearest neighbours for any
-    query however nonsensical, which is how a near-null query used to pull real
-    nodes into an agent's context — the floor is the only thing that lets the
-    graph say it knows nothing. The floor is supplied by the caller from a
-    calibration record; this function does not invent one.
+    The supplied similarity floor applies to each node's nearest chunk. A
+    bounded scan can return fewer than top_k nodes if duplicate or stale chunks
+    consume the ceiling; it does not establish completeness beyond that scan.
     """
-    if not ensure_vec_table(store):
+    if top_k <= 0 or not ensure_vec_table(store):
         return []
 
     embedding = embed_text(query, store.config, input_type="query")
@@ -1546,49 +1587,76 @@ def vector_search(store: Store, query: str, top_k: int = 10,
         return []
 
     try:
-        rows = store.conn.execute(
-            """SELECT node_id, distance
-               FROM node_vectors
-               WHERE embedding MATCH ?
-               ORDER BY distance
-               LIMIT ?""",
-            (_serialize_vec(embedding), max(top_k * 8, top_k)),
-        ).fetchall()
-
-        best: dict[str, dict] = {}
-        for row in rows:
-            vector_id = row[0]
-            node_id, chunk_index = _vector_row_node(store, vector_id)
-            distance = row[1]
-            existing = best.get(node_id)
-            if existing is None or distance < existing["distance"]:
-                best[node_id] = {
-                    "distance": distance,
-                    "chunk_index": chunk_index,
-                    "vector_id": vector_id,
-                }
-
         from .grounding import similarity_from_distance
 
-        results = []
-        for node_id, match in sorted(best.items(), key=lambda item: item[1]["distance"]):
-            similarity = similarity_from_distance(match["distance"])
-            if min_similarity is not None and similarity < min_similarity:
-                # Rows arrive best-first, so the first row under the floor
-                # means every remaining row is too.
-                break
-            node = store.get_node(node_id)
-            # Skip superseded nodes — their embeddings are deleted on
-            # supersede now, but rows from older DBs may linger.
-            if node and node.get("status") != "superseded":
+        # sqlite-vec limits a KNN query to 4096 candidates. Refill geometrically
+        # when duplicate chunks or missing/superseded nodes crowd out live IDs.
+        ceiling = 4096
+        allowance = min(max(top_k * 8, top_k), ceiling)
+        serialized = _serialize_vec(embedding)
+        metadata: dict[str, tuple[str, int | None]] = {}
+        nodes: dict[str, dict] = {}
+        hydrated: set[str] = set()
+        while True:
+            rows = store.conn.execute(
+                """SELECT node_id, distance
+                   FROM node_vectors
+                   WHERE embedding MATCH ?
+                   ORDER BY distance
+                   LIMIT ?""",
+                (serialized, allowance),
+            ).fetchall()
+            unknown = [row[0] for row in rows if row[0] not in metadata]
+            for first in range(0, len(unknown), 500):
+                page = unknown[first:first + 500]
+                placeholders = ",".join("?" for _ in page)
+                try:
+                    mapped = store.conn.execute(
+                        "SELECT vector_id, node_id, chunk_index FROM node_vector_meta "
+                        f"WHERE vector_id IN ({placeholders})", page
+                    ).fetchall()
+                except Exception:
+                    # Legacy indexes may lack chunk metadata. Their vector ID
+                    # has always doubled as the node ID.
+                    mapped = []
+                metadata.update((row["vector_id"], (row["node_id"], row["chunk_index"]))
+                                for row in mapped)
+                for vector_id in page:
+                    metadata.setdefault(vector_id, (vector_id, None))
+
+            best: dict[str, dict] = {}
+            floor_reached = False
+            for row in rows:
+                vector_id, distance = row[0], row[1]
+                similarity = similarity_from_distance(distance)
+                if min_similarity is not None and similarity < min_similarity:
+                    floor_reached = True
+                    break
+                node_id, chunk_index = metadata[vector_id]
+                if node_id not in best or distance < best[node_id]["distance"]:
+                    best[node_id] = {
+                        "distance": distance, "similarity": similarity,
+                        "chunk_index": chunk_index,
+                    }
+            missing = [node_id for node_id in best if node_id not in hydrated]
+            nodes.update(store.peek_nodes(missing))
+            hydrated.update(missing)
+            results = []
+            for node_id, match in sorted(best.items(), key=lambda item: item[1]["distance"]):
+                node = nodes.get(node_id)
+                if node is None or node.get("status") == "superseded":
+                    continue
+                node = dict(node)
                 node["vec_distance"] = match["distance"]
-                node["vec_similarity"] = similarity
+                node["vec_similarity"] = match["similarity"]
                 if match["chunk_index"] is not None:
                     node["vec_chunk_index"] = match["chunk_index"]
                 results.append(node)
                 if len(results) >= top_k:
-                    break
-        return results
+                    return results
+            if floor_reached or len(rows) < allowance or allowance >= ceiling:
+                return results
+            allowance = min(ceiling, allowance * 2)
     except Exception:
         return []
 

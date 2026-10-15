@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from .privacy import redact, safe_error
 from .privacy import redacting_print as print
+from .schema import validate_storage_node_type
 
 if TYPE_CHECKING:
     from .config import Config
@@ -199,6 +200,46 @@ def _rotate_archive(config: "Config") -> Path | None:
     return rotated
 
 
+def _refuse_archive_collisions(
+    current_path: Path,
+    current: sqlite3.Connection,
+    node_id: str,
+    edges: list[dict],
+) -> None:
+    """Never infer complete evidence equivalence from matching archive IDs.
+
+    The caller holds the current archive write lock. Older files are checked
+    read-only, including legacy files whose summary rows cannot prove equality.
+    Even an apparently identical retry is refused for explicit review.
+    """
+    for path in sorted(current_path.parent.glob("*.db")):
+        conn = current
+        try:
+            if path != current_path:
+                conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+            if conn.execute(
+                "SELECT 1 FROM archived_nodes WHERE id = ?", (node_id,)
+            ).fetchone():
+                raise ValueError(
+                    "Archive node ID collision; source and archived evidence were preserved"
+                )
+            for edge in edges:
+                if conn.execute(
+                    "SELECT 1 FROM archived_edges WHERE id = ?", (str(edge["id"]),)
+                ).fetchone():
+                    raise ValueError(
+                        "Archive edge ID collision; source and archived evidence were preserved"
+                    )
+        except sqlite3.Error as error:
+            # An unreadable file is not evidence that the IDs are absent.
+            raise ValueError(
+                "Archive collision check failed; source and archived evidence were preserved"
+            ) from error
+        finally:
+            if conn is not current:
+                conn.close()
+
+
 def archive_nodes(
     config: "Config",
     store: "Store",
@@ -282,8 +323,17 @@ def archive_nodes(
                 # The source BEGIN IMMEDIATE above prevents another writer from
                 # adding an edge between this read and the source deletion.
                 archive_conn.execute("BEGIN IMMEDIATE")
+                edges = [
+                    dict(edge) for edge in source.execute(
+                        "SELECT * FROM edges WHERE from_id = ? OR to_id = ?",
+                        (nid, nid),
+                    )
+                ]
+                if redact(edges) != edges:
+                    raise ValueError("Archive edges require explicit credential remediation")
+                _refuse_archive_collisions(current_path, archive_conn, nid, edges)
                 archive_conn.execute(
-                    """INSERT OR REPLACE INTO archived_nodes
+                    """INSERT INTO archived_nodes
                        (id, title, content, type, status, weight, domains, extra,
                         created_at, updated_at, archived_at, prov_source,
                         prov_activity, prov_who, prov_why, node_row)
@@ -310,17 +360,9 @@ def archive_nodes(
                     ),
                 )
 
-                edges = [
-                    dict(edge) for edge in source.execute(
-                        "SELECT * FROM edges WHERE from_id = ? OR to_id = ?",
-                        (nid, nid),
-                    )
-                ]
-                if redact(edges) != edges:
-                    raise ValueError("Archive edges require explicit credential remediation")
                 for edge in edges:
                     archive_conn.execute(
-                        """INSERT OR REPLACE INTO archived_edges
+                        """INSERT INTO archived_edges
                            (id, from_id, to_id, type, weight, provenance,
                             created_at, archived_at, edge_row)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -340,11 +382,10 @@ def archive_nodes(
                 # Delete inside the held source transaction first, so a delete
                 # the store refuses fails before any copy exists; then commit
                 # the recoverable copy, and only then the deletion. A crash
-                # between the two commits can leave a duplicate, never loss;
-                # retrying an otherwise-eligible node is idempotent because
-                # archive rows replace by ID. The next archive cycle reports
-                # any duplicate that became ineligible rather than guessing
-                # that equal IDs prove equal entities.
+                # between the two commits can leave a duplicate, never loss.
+                # An overlapping retry refuses the move and preserves both
+                # copies for explicit review: equal IDs do not prove complete
+                # evidence equivalence, especially for legacy archive rows.
                 source.execute(
                     "DELETE FROM edges WHERE from_id = ? OR to_id = ?",
                     (nid, nid),
@@ -638,12 +679,16 @@ def _legacy_node_row(row: sqlite3.Row) -> dict:
 
 
 def _legacy_edge_row(row: sqlite3.Row) -> dict:
+    # Legacy summary rows still carry the original edge ID. Omitting it would
+    # let SQLite allocate a new ID and hide a collision with another live edge.
     return {key: row[key] for key in (
-        "from_id", "to_id", "type", "weight", "provenance", "created_at",
+        "id", "from_id", "to_id", "type", "weight", "provenance", "created_at",
     )}
 
 
 def _insert(store: "Store", table: str, values: dict) -> int:
+    if table == "nodes":
+        validate_storage_node_type(values.get("type", "concept"))
     columns = {info[1] for info in store.conn.execute(f"PRAGMA table_info({table})")}
     # Known column names only; NULL leaves the column to its default.
     values = {k: v for k, v in values.items() if k in columns and v is not None}
@@ -690,6 +735,7 @@ def restore_node(
             continue
         try:
             node = _stored(row, "node_row") or _legacy_node_row(row)
+            validate_storage_node_type(node.get("type", "concept"))
             node.update(id=node_id, status="active", weight=0.3, updated_at=_now())
             decoded = _decoded(node)
             if redact(decoded) != decoded:
@@ -724,10 +770,20 @@ def restore_node(
                         ).fetchone():
                             continue
                         values = _stored(edge, "edge_row") or _legacy_edge_row(edge)
+                        if (values.get("id") is None
+                                or str(values["id"]) != str(edge["id"])):
+                            raise ValueError(
+                                "Archived edge identity cannot be verified; "
+                                "source and archived evidence were preserved"
+                            )
                         if redact(values) != values:
                             raise ValueError(
                                 "Archived edge requires explicit credential remediation")
-                        _insert(store, "edges", values)
+                        if _insert(store, "edges", values) != 1:
+                            raise ValueError(
+                                "Archived edge collides with the fast graph; "
+                                "source and archived evidence were preserved"
+                            )
                         restored_edges.setdefault(edge_file, []).append(edge["id"])
                 source.commit()
             except BaseException:

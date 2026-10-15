@@ -315,6 +315,7 @@ def test_a6_subscription_warning_coexists_with_advisory_deduplicates_and_rearms(
 
 def test_a6_api_warning_coexists_with_advisory(tmp_path, monkeypatch):
     cfg = config(tmp_path / "data", backend="api", max_conversation_cost=1)
+    cfg.llm.enabled = True  # The injected fake transport still requires API opt-in.
     cfg.budget.daily = 10
     sc = scope(tmp_path)
     conv = supervisor.session_key(sc)

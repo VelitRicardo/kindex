@@ -27,6 +27,18 @@ class SavedSim(BaseModel):
     tokens_out: int = 0
 
 
+class TerminalOutcome(BaseModel):
+    state: str
+    reason: str
+    health_state: str
+    health_reason: str
+    outcome: Literal["neutral", "quiet", "advisory", "failure"] = "neutral"
+
+
+class ReviewPersistenceError(RuntimeError):
+    """A durable transition failed; retain its claim instead of reclassifying it."""
+
+
 class ReviewClaim(BaseModel):
     attempt_id: str = Field(default_factory=lambda: uuid4().hex)
     # The admitted job format predates claims; preserve its pinned config/scope.
@@ -34,6 +46,7 @@ class ReviewClaim(BaseModel):
     phase: Literal["claimed", "sim_started", "sim_saved", "advocate_started", "ready"] = "claimed"
     result: SavedSim | None = None
     pending: dict[str, Any] | None = None
+    terminal: TerminalOutcome | None = None
 
 
 class DiscardedReview(BaseModel):
@@ -68,7 +81,7 @@ def _list(store, key: str) -> list[dict]:
     return value
 
 
-def claim_next(store) -> tuple[ReviewClaim | None, bool]:
+def claim_next(store, *, exclude_review_ids=()) -> tuple[ReviewClaim | None, bool]:
     """Caller holds the worker lock; move only one waiting job atomically."""
     from .supervisor import store_lock
     with store_lock(store, "queue"):
@@ -76,13 +89,14 @@ def claim_next(store) -> tuple[ReviewClaim | None, bool]:
         if existing:
             return ReviewClaim.model_validate_json(existing), True
         queue = _list(store, QUEUE_META)
-        if not queue:
+        selected = next((i for i, job in enumerate(queue) if job.get("review_id") not in exclude_review_ids), None)
+        if selected is None:
             return None, False
-        claim = ReviewClaim(job=queue[0])
+        claim = ReviewClaim(job=queue[selected])
         store.conn.execute("BEGIN IMMEDIATE")
         try:
             _put(store, CLAIM_META, claim.model_dump())
-            _put(store, QUEUE_META, queue[1:])
+            _put(store, QUEUE_META, queue[:selected] + queue[selected + 1:])
             store.conn.commit()
         except BaseException:
             store.conn.rollback()
@@ -99,11 +113,56 @@ def save_claim(store, claim: ReviewClaim) -> None:
         store.set_meta(CLAIM_META, claim.model_dump_json())
 
 
+def park_claim(store, claim, config):
+    """Yield an undispatched claim without releasing its admitted subject.
+
+    A newer waiting window for the same conversation supersedes the parked
+    snapshot. Otherwise retain its exact review identity at the queue tail.
+    """
+    from . import adaptive_sim as adaptive
+    from .supervisor import store_lock
+    if claim.phase != "claimed" or claim.result is not None or claim.terminal is not None:
+        raise ValueError("Only undispatched claims may be parked")
+    with store_lock(store, "queue"):
+        current = ReviewClaim.model_validate_json(store.get_meta(CLAIM_META) or "{}")
+        if current.attempt_id != claim.attempt_id or current.job.get("review_id") != claim.job.get("review_id"):
+            raise ValueError("Review claim changed before parking")
+        queue = _list(store, QUEUE_META)
+        conv = claim.job.get("conversation_id")
+        newer = any(job.get("conversation_id") == conv for job in queue)
+        if not newer:
+            queue.append(claim.job)
+        cap = max(1, config.sim.max_queue)
+        evicted = ([claim.job] if newer else []) + queue[:-cap]
+        queue = queue[-cap:]
+        control = adaptive.read_control(store)
+        for job in evicted:
+            adaptive.record_advice(control, config.sim.adaptive, job, status="discarded",
+                                   reason="superseded" if job is claim.job and newer else "saturation")
+        retained = {job.get("conversation_id") for job in queue}
+        store.conn.execute("BEGIN IMMEDIATE")
+        try:
+            _put(store, QUEUE_META, queue)
+            adaptive.put_control(store, control, config.sim.adaptive)
+            for job in evicted:
+                conversation = job.get("conversation_id")
+                if conversation and conversation not in retained:
+                    store.conn.execute("DELETE FROM meta WHERE key=?", ("sim.admission." + conversation,))
+            store.conn.execute("DELETE FROM meta WHERE key=?", (CLAIM_META,))
+            store.conn.commit()
+        except BaseException:
+            store.conn.rollback()
+            raise
+
+
 def acknowledge(store, claim: ReviewClaim, *, state: str, reason: str,
-                health_state: str, health_reason: str) -> list[dict]:
+                health_state: str, health_reason: str, config=None, outcome: str = "neutral") -> list[dict]:
     """Commit the exact claim's result, advisory and removal in one transaction."""
     from .supervisor import store_lock
     from .sim import _now
+    from . import adaptive_sim as adaptive
+    config = config or store.config
+    settings = config.sim.adaptive
     job = claim.job
     conv = str(job.get("conversation_id") or "")
     receipt = ReviewReceipt(attempt_id=claim.attempt_id, conversation_id=conv,
@@ -123,8 +182,21 @@ def acknowledge(store, claim: ReviewClaim, *, state: str, reason: str,
             pending = [p for p in pending if p.get("conversation_id") != conv] + [claim.pending]
             receipt.discarded = [DiscardedReview(review_id=p["review_id"], scope=p.get("scope"))
                                  for p in superseded if isinstance(p.get("review_id"), str) and p["review_id"]]
+        # All adaptive facts share the exact terminal commit and claim identity.
+        control = adaptive.read_control(store)
+        clock = adaptive.now()
+        adaptive.apply_outcome(control, settings, str(store.db_path), conv,
+                               str(job.get("review_id") or claim.attempt_id), outcome, clock)
+        evicted = pending[:-max(1, config.sim.max_queue)]
+        pending = pending[-max(1, config.sim.max_queue):]
+        for previous in superseded + evicted:
+            adaptive.record_advice(control, settings, previous, status="discarded",
+                                   reason="superseded" if previous in superseded else "saturation", clock=clock)
+        if claim.pending is not None:
+            adaptive.record_advice(control, settings, claim.pending, clock=clock)
         store.conn.execute("BEGIN IMMEDIATE")
         try:
+            adaptive.put_control(store, control, settings)
             if claim.pending is not None:
                 _put(store, PENDING_META, pending)
             if conv:

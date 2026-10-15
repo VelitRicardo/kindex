@@ -25,6 +25,18 @@ OPERATIONAL_TYPES = (
 
 ALL_NODE_TYPES = NODE_TYPES + OPERATIONAL_TYPES
 
+# Storage also serves dedicated internal producers. Keep this separate from
+# public API allowlists: coordination owns collabs, and claude_web owns imported
+# conversation history. A storage allowance does not grant generic add access.
+STORAGE_NODE_TYPES = ALL_NODE_TYPES + ("coordination", "conversation")
+
+
+def validate_storage_node_type(node_type: object) -> None:
+    """Refuse malformed types without rewriting legacy evidence or echoing it."""
+    if not isinstance(node_type, str) or node_type not in STORAGE_NODE_TYPES:
+        raise ValueError("node_type is not allowed")
+
+
 # What a generic add may create. Tasks, sessions and projects have their own
 # tools, which own their lifecycle; an unknown type would fall to the
 # editable class and bypass the additive edit policy.

@@ -418,6 +418,7 @@ def dispatch(request: dict) -> dict:
                 from .supervisor import supervisor_tick
                 return supervisor_tick(store, store.config, scope, text=str(request.get("text", "")),
                                        goal=request.get("goal"), initial_goal=request.get("initial_goal"), event_id=request.get("event_id"),
+                                       event=str(request.get("event") or "activity"),
                                        transcript_path=request.get("transcript_path"), deliver=request.get("deliver") is not False,
                                        launch_paths=[(request.get("scope") or {}).get("project_path")])
             if action == "task":
