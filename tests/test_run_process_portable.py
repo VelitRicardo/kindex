@@ -5,6 +5,7 @@ use the running interpreter instead of a shell, so Windows exercises it too.
 """
 
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -49,6 +50,29 @@ def test_a_timed_out_run_takes_its_children_with_it(tmp_path):
     returncode, _, _ = _run_process([sys.executable, "-c", _spawner(pidfile, then="time.sleep(60)")], timeout=3)
     assert returncode is None
     assert time.monotonic() - started < 20
+    assert _gone_within(int(pidfile.read_text()), 10)
+
+
+def test_a_shell_command_line_is_posix_shell():
+    # The config's commands are split with shlex; a quoted Windows path must run too.
+    words = ["a b", "$HOME", "*", "@words", "C:\\\\Users\\\\me 'q' \"dq\"\nnext"]
+    command = shlex.join([sys.executable, "-c", "import sys; print(repr(sys.argv[1:]))", *words]) + " | cat"
+    returncode, stdout, _ = _run_process(command, shell=True, timeout=30)
+    assert returncode == 0
+    assert stdout.strip() == repr(words)
+
+
+def test_a_shell_command_line_keeps_its_exit_status():
+    returncode, stdout, _ = _run_process("echo one; exit 7; echo two", shell=True, timeout=30)
+    assert returncode == 7
+    assert stdout.strip() == "one"
+
+
+def test_a_timed_out_shell_command_takes_its_children_with_it(tmp_path):
+    pidfile = tmp_path / "child.pid"
+    command = shlex.join([sys.executable, "-c", _spawner(pidfile, then="time.sleep(60)")])
+    returncode, _, _ = _run_process(command + "; true", shell=True, timeout=3)
+    assert returncode is None
     assert _gone_within(int(pidfile.read_text()), 10)
 
 

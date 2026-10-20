@@ -1,9 +1,11 @@
 """Cross-platform no-follow opens and advisory locks (kindex.platform_io)."""
 
 import ast
+import contextlib
 import errno
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -197,3 +199,58 @@ def test_null_device_maps_dev_null_on_windows_only(monkeypatch):
     assert platform_io.null_device("config.yaml") == "config.yaml"
     monkeypatch.setattr(platform_io.os, "name", "posix")
     assert platform_io.null_device("/dev/null") == "/dev/null"
+
+
+class _Registry:
+    """A stand-in ``winreg`` holding at most a GitForWindows InstallPath."""
+    HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER = "HKLM", "HKCU"
+
+    def __init__(self, install_path=None):
+        self.install_path = install_path
+
+    def OpenKey(self, hive, name):
+        if self.install_path is None or hive != self.HKEY_LOCAL_MACHINE or name != r"SOFTWARE\GitForWindows":
+            raise FileNotFoundError(name)
+        return contextlib.nullcontext(name)
+
+    def QueryValueEx(self, key, value):
+        assert value == "InstallPath"
+        return str(self.install_path), 1
+
+
+def _git_tree(root, *tools):
+    for tool in tools:
+        (root / tool).parent.mkdir(parents=True, exist_ok=True)
+        (root / tool).write_bytes(b"")
+    return root
+
+
+def test_posix_shell_is_bin_sh_on_posix(monkeypatch):
+    monkeypatch.setattr(platform_io.os, "name", "posix")
+    assert platform_io.posix_shell() == "/bin/sh"
+
+
+@pytest.mark.parametrize("git", ["cmd/git.exe", "mingw64/bin/git.exe", "ucrt64/bin/git.exe"])
+def test_posix_shell_is_the_sh_of_the_git_on_path(tmp_path, monkeypatch, git):
+    install = _git_tree(tmp_path / "Git", git, "usr/bin/sh.exe")
+    monkeypatch.setattr(platform_io.os, "name", "nt")
+    monkeypatch.setattr(platform_io.shutil, "which", lambda name: str(install / git) if name == "git" else None)
+    monkeypatch.setitem(sys.modules, "winreg", _Registry())
+    assert platform_io.posix_shell() == str((install / "usr/bin/sh.exe").resolve())
+
+
+def test_posix_shell_falls_back_to_the_git_install_record(tmp_path, monkeypatch):
+    install = _git_tree(tmp_path / "Git", "usr/bin/sh.exe")
+    monkeypatch.setattr(platform_io.os, "name", "nt")
+    monkeypatch.setattr(platform_io.shutil, "which", lambda name: None)
+    monkeypatch.setitem(sys.modules, "winreg", _Registry(install))
+    assert platform_io.posix_shell() == str(install / "usr/bin/sh.exe")
+
+
+def test_posix_shell_never_takes_a_bare_sh_or_bash_from_path(tmp_path, monkeypatch):
+    # WSL puts bash.exe in System32; only Git's own sh.exe qualifies.
+    loose = _git_tree(tmp_path / "System32", "bash.exe", "sh.exe")
+    monkeypatch.setattr(platform_io.os, "name", "nt")
+    monkeypatch.setattr(platform_io.shutil, "which", lambda name: None if name == "git" else str(loose / f"{name}.exe"))
+    monkeypatch.setitem(sys.modules, "winreg", _Registry())
+    assert platform_io.posix_shell() is None

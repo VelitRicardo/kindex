@@ -385,6 +385,10 @@ def _run_process(
             decode(chunks[proc.stdout]), decode(chunks[proc.stderr]))
 
 
+_SHELL_COMMAND = "KINDEX_SHELL_COMMAND"
+_SHELL_RUNNER = f'command=${_SHELL_COMMAND}; unset {_SHELL_COMMAND}; eval "$command"'
+
+
 def _run_process_windows(cmd, *, shell, input_text, timeout, grace, max_bytes):
     """``_run_process`` for Windows, with the same contract.
 
@@ -396,8 +400,18 @@ def _run_process_windows(cmd, *, shell, input_text, timeout, grace, max_bytes):
     """
     import threading
 
+    env = None
+    if shell and isinstance(cmd, str):
+        # A shell command line is POSIX shell: run it under Git's sh, as /bin/sh
+        # would; without Git it falls back to cmd.exe. The line travels in the
+        # environment, not in sh's arguments: MSYS re-parses its own command
+        # line (a quoted \\ becomes \, globs and @files expand).
+        sh = platform_io.posix_shell()
+        if sh:
+            env = {**os.environ, _SHELL_COMMAND: cmd}
+            cmd, shell = [sh, "-c", _SHELL_RUNNER], False
     proc = subprocess.Popen(
-        cmd, shell=shell, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        cmd, shell=shell, env=env, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )

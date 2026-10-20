@@ -33,6 +33,12 @@ session; Windows has no process groups, so it kills the process tree with
 nothing on POSIX; on Windows the system (never per-user) variables without
 which a process cannot start its socket layer or find its shell. A closed
 environment stays closed: no user profile, app-data or temp directories.
+
+``posix_shell`` is the ``sh`` a shell command line runs under. Commands in the
+config (``sim.command``, reminder actions) are POSIX shell, split with
+``shlex``; on Windows they run under Git for Windows' ``sh.exe`` (the one
+beside the ``git`` on PATH, else from its install record), never a bare
+``bash``/``sh`` from PATH, which can be WSL's. None means ``cmd.exe``.
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ from __future__ import annotations
 import errno
 import os
 import re
+import shutil
 import signal
 import stat
 import subprocess
@@ -52,7 +59,7 @@ except ImportError:  # Windows
     fcntl = None
     import msvcrt
 
-__all__ = ["open_nofollow", "lock", "unlock", "fsync_directory", "home", "expanduser", "null_device", "kill_tree", "essential_environment"]
+__all__ = ["open_nofollow", "lock", "unlock", "fsync_directory", "home", "expanduser", "null_device", "kill_tree", "essential_environment", "posix_shell"]
 
 _LOCK_OFFSET = 0x7FFFFFFF  # one byte past any realistic lock-file payload
 _RETRY_SECONDS = 0.01
@@ -186,3 +193,33 @@ def essential_environment() -> dict[str, str]:
     if os.name != "nt":
         return {}
     return {key: os.environ[key] for key in _WINDOWS_ESSENTIAL if key in os.environ}
+
+
+def _git_install_roots() -> list[Path]:
+    roots = []
+    git = shutil.which("git")
+    if git:
+        # Git\cmd\git.exe, Git\mingw64\bin\git.exe or Git\ucrt64\bin\git.exe
+        roots.extend(list(Path(git).resolve().parents)[1:3])
+    try:
+        import winreg
+    except ImportError:  # POSIX
+        return roots
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(hive, r"SOFTWARE\GitForWindows") as key:
+                roots.append(Path(winreg.QueryValueEx(key, "InstallPath")[0]))
+        except OSError:
+            continue
+    return roots
+
+
+def posix_shell() -> str | None:
+    """``/bin/sh`` on POSIX; Git for Windows' ``sh.exe`` on Windows, or None when Git is absent."""
+    if os.name != "nt":
+        return "/bin/sh"
+    for root in _git_install_roots():
+        candidate = root / "usr" / "bin" / "sh.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return None
