@@ -549,7 +549,12 @@ class TestReminderCLI:
             "--instructions", "Continue the outstanding build work.",
             "--json",
             tmp_path=tmp_path,
-            env={"CODEX_HOME": str(home), "CODEX_THREAD_ID": ""},
+            env={
+                "CODEX_HOME": str(home),
+                "CODEX_THREAD_ID": "",
+                "CODEX_SESSION_ID": "",
+                "CODEX_CONVERSATION_ID": "",
+            },
         )
 
         assert result.returncode == 0, result.stderr
