@@ -5,6 +5,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from xml.sax.saxutils import escape
@@ -1458,7 +1459,11 @@ def install_merge_driver(root: "Path", dry_run: bool = False) -> list[str]:
     without the driver registered fall back to git's default merge gracefully.
     """
     actions: list[str] = []
-    driver_cmd = f"{_find_kin_path()} merge-kin %O %A %B %P"
+    # git runs the driver through sh: quote the program, whose path may hold
+    # spaces or (on Windows) backslashes that sh would drop.
+    executable = shutil.which("kin")
+    program = [executable] if executable else [sys.executable, "-m", "kindex.cli"]
+    driver_cmd = shlex.join([*program, "merge-kin"]) + " %O %A %B %P"
     for key, value in (
         ("merge.kindex.name", "Kindex .kin artifact structured merge"),
         ("merge.kindex.driver", driver_cmd),
