@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import subprocess
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -146,7 +147,9 @@ def _is_absolute_path(value: str) -> bool:
 
 
 def _relative_to_root(value: str, root: Path) -> str | None:
-    if _is_windows_absolute(value) or _is_windows_absolute(str(root)):
+    # Lexical only when a POSIX host reads Windows paths; on Windows the path is
+    # resolved like everywhere else, so a symlink out of the repo is refused.
+    if os.name != "nt" and (_is_windows_absolute(value) or _is_windows_absolute(str(root))):
         try:
             return PureWindowsPath(value).relative_to(
                 PureWindowsPath(str(root)),
