@@ -8377,6 +8377,11 @@ def main():
 
     install_from_env()
     sys.excepthook = _redacted_excepthook
+    # A pipe on Windows takes the ANSI code page (cp1252), which cannot encode
+    # the ✓/✗ marks or most node text: print a replacement, never crash mid-output.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     from .store import (
         ProfileMismatchError,
         SchemaMigrationError,
