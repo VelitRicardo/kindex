@@ -299,7 +299,8 @@ def _session_id(value):
 
 
 def _environment():
-    return {**{key: os.environ[key] for key in ("HOME", "PATH", "USER", "LANG", "TMPDIR", "KIN_HEALTH_DIR") if key in os.environ},
+    return {**platform_io.essential_environment(),
+            **{key: os.environ[key] for key in ("HOME", "PATH", "USER", "LANG", "TMPDIR", "KIN_HEALTH_DIR") if key in os.environ},
             "KINDEX_REVIEW_WORKER": "1"}
 
 
@@ -488,7 +489,7 @@ def _bounded_process(argv, prompt, env, workspace, timeout, backend=None):
             streams.close()
             # Children must not outlive a review, even when their parent exited.
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
+                platform_io.kill_tree(proc.pid)
             except ProcessLookupError:
                 pass
             proc.wait()

@@ -24,6 +24,15 @@ on every platform. An MSYS-style ``HOME=/c/Users/me`` is read as ``C:/Users/me``
 
 ``null_device`` maps the conventional ``/dev/null`` (e.g. ``--config /dev/null``
 for "no config") to Windows' ``nul`` when a program, not a shell, passes it.
+
+``kill_tree`` is ``killpg(pid, SIGKILL)`` for a child started in its own
+session; Windows has no process groups, so it kills the process tree with
+``taskkill /T /F``. Both raise ``ProcessLookupError`` when nothing is left.
+
+``essential_environment`` is what a minimal child environment must still carry:
+nothing on POSIX; on Windows the system (never per-user) variables without
+which a process cannot start its socket layer or find its shell. A closed
+environment stays closed: no user profile, app-data or temp directories.
 """
 
 from __future__ import annotations
@@ -31,7 +40,9 @@ from __future__ import annotations
 import errno
 import os
 import re
+import signal
 import stat
+import subprocess
 import time
 from pathlib import Path, PurePath
 
@@ -41,7 +52,7 @@ except ImportError:  # Windows
     fcntl = None
     import msvcrt
 
-__all__ = ["open_nofollow", "lock", "unlock", "fsync_directory", "home", "expanduser", "null_device"]
+__all__ = ["open_nofollow", "lock", "unlock", "fsync_directory", "home", "expanduser", "null_device", "kill_tree", "essential_environment"]
 
 _LOCK_OFFSET = 0x7FFFFFFF  # one byte past any realistic lock-file payload
 _RETRY_SECONDS = 0.01
@@ -152,3 +163,26 @@ def null_device(path):
     if os.name == "nt" and os.fspath(path).replace("\\", "/") == "/dev/null":
         return type(path)(os.devnull) if isinstance(path, PurePath) else os.devnull
     return path
+
+
+def kill_tree(pid: int) -> None:
+    """Kill ``pid`` and its descendants (its process group on POSIX)."""
+    if os.name != "nt":
+        os.killpg(pid, signal.SIGKILL)
+        return
+    result = subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                            capture_output=True, stdin=subprocess.DEVNULL)
+    if result.returncode == 128:  # no such process
+        raise ProcessLookupError(errno.ESRCH, "No such process", pid)
+    if result.returncode:
+        raise PermissionError(errno.EPERM, result.stderr.decode(errors="replace").strip() or "taskkill failed", pid)
+
+
+_WINDOWS_ESSENTIAL = ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT")
+
+
+def essential_environment() -> dict[str, str]:
+    """The variables a minimal child environment must keep on this platform (none on POSIX)."""
+    if os.name != "nt":
+        return {}
+    return {key: os.environ[key] for key in _WINDOWS_ESSENTIAL if key in os.environ}
