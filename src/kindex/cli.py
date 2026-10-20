@@ -891,7 +891,7 @@ def cmd_learn(args):
             # Mark as processed
             meta["processed"] = True
             from .vault import serialize_frontmatter
-            f.write_text(serialize_frontmatter(meta, body))
+            f.write_text(serialize_frontmatter(meta, body), encoding="utf-8")
 
         print(f"\nProcessed inbox: {count} new node(s).")
     else:
@@ -2009,7 +2009,7 @@ def cmd_export(args):
         if output_path:
             path = Path(output_path)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(output + "\n")
+            path.write_text(output + "\n", encoding="utf-8")
             print(f"Wrote {path}", file=sys.stderr)
         else:
             print(output)
@@ -3309,7 +3309,7 @@ def cmd_merge_kin(args):
     )
     if merged is None:
         sys.exit(1)
-    Path(args.ours).write_text(merged)
+    Path(args.ours).write_text(merged, encoding="utf-8")
     print(f"merge-kin: resolved {args.path}", file=sys.stderr)
 
 
@@ -3525,7 +3525,7 @@ def _profile_create(args):
             sys.exit(1)
 
     # Round-trip the existing yaml: load, modify, dump — unknown keys survive.
-    data = (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
+    data = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
     profiles = data.get("profiles") or {}
     if name in profiles:
         print(f"Error: profile '{name}' already exists in {path}", file=sys.stderr)
@@ -3539,7 +3539,7 @@ def _profile_create(args):
         data["default_profile"] = name
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+        path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False), encoding="utf-8")
     except (FileNotFoundError, OSError) as e:
         print(f"Error: cannot write config to {path}: {e}", file=sys.stderr)
         sys.exit(1)
@@ -3792,7 +3792,7 @@ def cmd_ask(args):
     try:
         team = None
         if getattr(args, "context_file", None):
-            team = Path(args.context_file).read_text().splitlines()
+            team = Path(args.context_file).read_text(encoding="utf-8").splitlines()
         # In a terminal the answer is shown sentence by sentence as it is written.
         stream = (lambda text: print(text, end="", flush=True)) if sys.stdout.isatty() else None
         result = answer_question(store, question, cfg, ledger, as_of=getattr(args, "as_of", None), team=team,
@@ -4122,7 +4122,7 @@ def cmd_import_graph(args):
     dry_run = getattr(args, "dry_run", False)
     try:
         filepath = Path(args.filepath)
-        text = filepath.read_text()
+        text = filepath.read_text(encoding="utf-8")
         if filepath.suffix == ".jsonl" or args.format == "jsonl":
             items = [json.loads(line) for line in text.split("\n") if line.strip()]
         else:
@@ -4968,7 +4968,7 @@ def cmd_mode(args):
             store.close()
             return
         try:
-            with open(fpath) as f:
+            with open(fpath, encoding="utf-8") as f:
                 artifact = json.load(f)
             mode_id = import_mode(store, artifact)
             print(f"Imported mode: {artifact.get('name', '?')} ({mode_id})")
@@ -6357,7 +6357,7 @@ def cmd_integration_doctor(args):
         from .claude_install import QUALIFIED_CLAUDE_VERSION
         result["qualified_claude_version"] = QUALIFIED_CLAUDE_VERSION
         record = cfg.claude_path / "kindex-adapter.json"
-        result["adapter"] = json.loads(record.read_text()) if record.exists() else {"mode": "unmanaged"}
+        result["adapter"] = json.loads(record.read_text(encoding="utf-8")) if record.exists() else {"mode": "unmanaged"}
     except ConfigResolutionError:
         raise  # a command: main() prints the remedy and exits 2
     except Exception as error:
@@ -6492,16 +6492,16 @@ def cmd_setup_claude_md(args):
     if getattr(args, "install", False):
         claude_md = Path.home() / ".claude" / "CLAUDE.md"
         if claude_md.exists():
-            existing = claude_md.read_text()
+            existing = claude_md.read_text(encoding="utf-8")
             if any(marker in existing for marker in _KINDEX_BLOCK_MARKERS):
                 print("Kindex directives already present in CLAUDE.md")
                 return
-            with open(claude_md, "a") as f:
+            with open(claude_md, "a", encoding="utf-8") as f:
                 f.write("\n" + block)
             print(f"Appended kindex directives to {claude_md}")
         else:
             claude_md.parent.mkdir(parents=True, exist_ok=True)
-            claude_md.write_text(block)
+            claude_md.write_text(block, encoding="utf-8")
             print(f"Created {claude_md} with kindex directives")
     else:
         print(block)
@@ -6520,16 +6520,16 @@ def cmd_setup_agents_md(args):
         cfg = _config(args)
         agents_md = cfg.codex_path / "AGENTS.md" if getattr(args, "global_install", False) else Path.cwd() / "AGENTS.md"
         if agents_md.exists():
-            existing = agents_md.read_text()
+            existing = agents_md.read_text(encoding="utf-8")
             if any(marker in existing for marker in _KINDEX_BLOCK_MARKERS):
                 print(f"Kindex directives already present in {agents_md}")
                 return
-            with open(agents_md, "a") as f:
+            with open(agents_md, "a", encoding="utf-8") as f:
                 f.write("\n" + block)
             print(f"Appended kindex directives to {agents_md}")
         else:
             agents_md.parent.mkdir(parents=True, exist_ok=True)
-            agents_md.write_text(block)
+            agents_md.write_text(block, encoding="utf-8")
             print(f"Created {agents_md} with kindex directives")
     else:
         print(block)
@@ -6563,16 +6563,16 @@ def cmd_setup_gemini_md(args):
         cfg = _config(args)
         gemini_md = cfg.gemini_path / "GEMINI.md"
         if gemini_md.exists():
-            existing = gemini_md.read_text()
+            existing = gemini_md.read_text(encoding="utf-8")
             if any(marker in existing for marker in _KINDEX_BLOCK_MARKERS):
                 print(f"Kindex directives already present in {gemini_md}")
                 return
-            with open(gemini_md, "a") as f:
+            with open(gemini_md, "a", encoding="utf-8") as f:
                 f.write("\n" + block)
             print(f"Appended kindex directives to {gemini_md}")
         else:
             gemini_md.parent.mkdir(parents=True, exist_ok=True)
-            gemini_md.write_text(block)
+            gemini_md.write_text(block, encoding="utf-8")
             print(f"Created {gemini_md} with kindex directives")
     else:
         print(block)
@@ -6702,7 +6702,7 @@ def cmd_setup_cursor_rules(args):
             print(f"Kindex Cursor rule already present at {rule_path}")
             return
         rule_path.parent.mkdir(parents=True, exist_ok=True)
-        rule_path.write_text(block)
+        rule_path.write_text(block, encoding="utf-8")
         print(f"Created {rule_path} with kindex directives")
     else:
         print(block)
@@ -7173,14 +7173,14 @@ def _config_write(key: str, value: str, config_path: str | None = None,
 
     # Load existing or start fresh
     if path.exists():
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     else:
         data = {}
 
     _dotset(data, key, _coerce_value(value))
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+        path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False), encoding="utf-8")
     except (FileNotFoundError, OSError) as e:
         print(f"Error: cannot write config to {path}: {e}", file=sys.stderr)
         sys.exit(1)

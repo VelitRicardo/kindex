@@ -85,7 +85,7 @@ def _project_slug(project_root: Path) -> str:
 def _infer_title(project_root: Path, claude_md: Path) -> str:
     """Infer project title from CLAUDE.md or directory name."""
     try:
-        text = claude_md.read_text(errors="replace")[:2000]
+        text = claude_md.read_text(errors="replace", encoding="utf-8")[:2000]
         # Look for a markdown heading
         for line in text.split("\n"):
             line = line.strip()
@@ -99,7 +99,7 @@ def _infer_title(project_root: Path, claude_md: Path) -> str:
 def _extract_project_context(claude_md: Path) -> str:
     """Extract the key content from a CLAUDE.md file."""
     try:
-        text = redact_text(claude_md.read_text(errors="replace"))
+        text = redact_text(claude_md.read_text(errors="replace", encoding="utf-8"))
         # Limit to reasonable size but keep the important stuff
         if len(text) > 4000:
             text = text[:4000] + "\n...(truncated)"
@@ -371,7 +371,7 @@ def _extract_codex_session(jsonl_path: Path, max_chars: int = 8000) -> tuple[dic
     total_len = 0
 
     try:
-        with open(jsonl_path, "r", errors="replace") as f:
+        with open(jsonl_path, "r", errors="replace", encoding="utf-8") as f:
             for line in f:
                 if total_len >= max_chars:
                     break
@@ -611,7 +611,7 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
             slug = _project_slug(project_root)
 
             try:
-                data = yaml.safe_load(config_file.read_text()) or {}
+                data = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
             except Exception:
                 continue
 
@@ -802,7 +802,7 @@ def _resolve_kin_recursive(
         return
 
     try:
-        data = yaml.safe_load(resolved.read_text()) or {}
+        data = yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
     except Exception:
         return
 
@@ -906,7 +906,7 @@ def load_synonym_rings(config: "Config", store: "Store", verbose: bool = False) 
     count = 0
     for syn_file in sorted(syn_dir.glob("*.syn")):
         try:
-            data = yaml.safe_load(syn_file.read_text()) or {}
+            data = yaml.safe_load(syn_file.read_text(encoding="utf-8")) or {}
         except Exception:
             if verbose:
                 print(f"  Warning: could not parse {syn_file.name}")
@@ -1143,7 +1143,7 @@ def _kin_declared_audience(output_dir: Path) -> str:
     config_file = output_dir / ".kin" / "config"
     try:
         if config_file.is_file():
-            data = yaml.safe_load(config_file.read_text()) or {}
+            data = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
             return str(data.get("audience", "") or "")
     except (OSError, yaml.YAMLError):
         pass
@@ -1226,5 +1226,5 @@ def write_kin_index(store: "Store", output_dir: Path) -> Path:
 
     output_path = output_dir / ".kin" / "index.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
+    output_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return output_path
