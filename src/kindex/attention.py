@@ -310,6 +310,111 @@ _BASH_SEGMENT_RE = re.compile(r"\|\||&&|\||;|&")
 _LEADING_NOISE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")  # FOO=bar env prefix
 _BASH_WRAPPERS = {"sudo", "command", "time", "nohup", "env", "exec", "builtin", "xargs", "nice", "stdbuf"}
 
+# `git` subcommands whose read-only-ness depends on how they were invoked: the
+# name alone does not say whether the command inspects or writes. `git stash`
+# saves the working tree, `git tag v1` creates a tag, `git branch feature`
+# creates a branch, `git config key value` writes a setting, `git remote add`
+# changes the remotes, and `git reflog expire` / `drop` / `write` change reflogs. The
+# read-only list named the subcommand, so each of those writes counted as pure
+# inspection and every reminder for it was silently dropped. These are
+# read-only only in their inspecting form.
+_GIT_FORM_DEPENDENT = frozenset({
+    "branch", "config", "remote", "reflog", "stash", "tag",
+})
+
+# Flags that make `git branch` / `git tag` list instead of act. `git tag -a`
+# makes an annotated tag (a write) and is deliberately absent from the tag set.
+#
+# `-v` / `--verbose` is deliberately absent from the branch set too: it only
+# makes a listing louder, it does not say that the command lists. `git branch
+# -v feature/x` creates the branch (git 2.50.1: the ref appears, and a
+# following `git branch feature/x` reports "already exists"), so a verbosity
+# flag must not turn a creation into inspection.
+#
+# The listing switches take a pattern or a commit-ish, never the name of a
+# branch to create: `git branch --list feature/x` lists the branches matching
+# "feature/x", and `git branch --merged base` lists the branches merged into
+# `base`.
+_GIT_LIST_FLAGS = {
+    "branch": frozenset({"-l", "--list", "-a", "--all", "-r", "--remotes",
+                         "--merged", "--no-merged", "--contains", "--no-contains",
+                         "--points-at", "--show-current"}),
+    "tag": frozenset({"-l", "--list", "-n", "--contains", "--no-contains",
+                      "--points-at", "--merged", "--no-merged"}),
+}
+
+# `git branch` writes the branch configuration without ever naming a branch:
+# the target is the option's own value (`--set-upstream-to=<upstream>`) or
+# there is no argument at all (`--unset-upstream`, `--edit-description`). So
+# "no positional argument" does not mean "nothing was written" here.
+_GIT_BRANCH_WRITE_FLAGS = frozenset({
+    "-u", "--set-upstream-to", "--unset-upstream", "--edit-description",
+})
+_GIT_BRANCH_WRITE_PREFIXES = ("--set-upstream-to=",)
+
+# `git config` writes when it is given a value or asked to remove one; reading
+# a single key is inspection. `git config edit` (git >= 2.46) and `git config
+# -e` / `--edit` open the file for editing — a write whose argument list looks
+# empty — while `git config get <key>` and the color getters read even when
+# they carry two positional arguments.
+_GIT_CONFIG_WRITE_FLAGS = frozenset({
+    "--unset", "--unset-all", "--add", "--remove-section", "--rename-section",
+    "--replace-all", "-e", "--edit",
+})
+_GIT_CONFIG_WRITE_SUBCOMMANDS = frozenset({"edit"})
+_GIT_CONFIG_READ_SUBCOMMANDS = frozenset({"get"})
+_GIT_CONFIG_READ_FLAGS = frozenset({
+    "--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color",
+    "--get-colorbool", "-l", "--list",
+})
+
+
+def _git_positional(args: list[str]) -> list[str]:
+    """The non-flag arguments of a git invocation."""
+    return [arg for arg in args if not arg.startswith("-")]
+
+
+def _git_is_readonly_form(sub: str, args: list[str]) -> bool:
+    """Whether this invocation of `git <sub>` only inspects."""
+    positional = _git_positional(args)
+    if sub == "branch":
+        # A write switch wins over a listing switch.
+        if (any(arg in _GIT_BRANCH_WRITE_FLAGS for arg in args)
+                or any(arg.startswith(_GIT_BRANCH_WRITE_PREFIXES) for arg in args)):
+            return False
+        # A listing switch means the argument is a pattern or a commit-ish,
+        # not the name of a branch to create.
+        if any(arg in _GIT_LIST_FLAGS["branch"] for arg in args):
+            return True
+        # Otherwise the argument names the branch to create.
+        return not positional
+    if sub == "tag":
+        # `git tag v1` names what to create; a listing flag means the
+        # arguments are patterns to match, not names to write.
+        if any(arg in _GIT_LIST_FLAGS["tag"] for arg in args):
+            return True
+        return not positional
+    if sub == "config":
+        if any(arg in _GIT_CONFIG_WRITE_FLAGS for arg in args):
+            return False
+        if positional and positional[0] in _GIT_CONFIG_WRITE_SUBCOMMANDS:
+            return False
+        if positional and positional[0] in _GIT_CONFIG_READ_SUBCOMMANDS:
+            return True
+        if any(arg in _GIT_CONFIG_READ_FLAGS for arg in args):
+            return True
+        return len(positional) <= 1
+    if sub == "remote":
+        # show and get-url read a remote; add/remove/rename/set-url/prune and
+        # update change it.
+        return not positional or positional[0] in ("show", "get-url")
+    if sub == "stash":
+        # A bare `git stash` saves the working tree; only list and show read.
+        return bool(positional) and positional[0] in ("list", "show")
+    if sub == "reflog":
+        return not positional or positional[0] not in ("expire", "delete", "drop", "write")
+    return True
+
 
 def _bash_segment_is_readonly(segment: str, config: Config) -> bool:
     """True if a single pipeline segment is pure read-only inspection."""
@@ -322,7 +427,11 @@ def _bash_segment_is_readonly(segment: str, config: Config) -> bool:
     cmd = tokens[0].lstrip("(")
     sub = tokens[1] if len(tokens) > 1 else ""
     if cmd == "git":
-        return sub in config.attention.readonly_git_subcommands
+        if sub not in config.attention.readonly_git_subcommands:
+            return False
+        if sub in _GIT_FORM_DEPENDENT:
+            return _git_is_readonly_form(sub, tokens[2:])
+        return True
     if cmd == "kin":
         subs = config.attention.readonly_kin_subcommands
         # Entries may be two-word ("coord read", "profile list"): a parent

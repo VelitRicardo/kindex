@@ -11,6 +11,28 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   header, and serves an allowlist of graph tools; nothing that runs a
   command, reads a host path or ingests from the host is reachable.
 
+### Fixed
+- Attention no longer treats a mutating `git` command as pure read-only
+  inspection. The read-only list named subcommands, so `git stash`, `git tag
+  v1`, `git branch feature`, `git config key value`, `git remote add` and
+  `git reflog expire` counted as inspection and the reminders for them never
+  fired. Those subcommands are read-only only in their inspecting form
+  (`git stash list`, `git tag -l`, `git branch`, `git config key`,
+  `git remote -v`, `git reflog`).
+- Attention tells a `git branch` listing from a `git branch` creation. A
+  verbosity flag is not a listing switch: `git branch -v feature/x` creates
+  the branch, and `-v` only makes a listing louder. The listing switches
+  (`--list`, `--merged`, `--contains`, `--points-at`, `--remotes`) take a
+  pattern or a commit-ish, so their argument is never a name to create. The
+  option-shaped writes are writes too: `git branch --set-upstream-to=<upstream>`,
+  `--unset-upstream` and `--edit-description` change the branch configuration
+  without naming a branch, and `git config edit`, `git config -e` and
+  `git config --edit` open the file for editing, while `git config get <key>`
+  reads a single value.
+- Attention also treats `git reflog drop` and `git reflog write` as actions,
+  while `git config --get-color` and `--get-colorbool` remain read-only even
+  when given an optional second argument.
+
 ## [0.49.0] - 2026-10-14
 
 ### Added
