@@ -164,6 +164,15 @@ def test_a_host_that_refuses_the_plugin_blocks_the_modern_switch(tmp_path, monke
     assert not (cfg.claude_path / "skills/kindex-modern").exists()
 
 
+def test_modern_hook_modules_declare_themselves_es_modules():
+    """Node takes a .ts file's module type from the nearest package.json; one
+    above the plugin declaring commonjs made kindex.ts fail to load."""
+    import kindex
+
+    hooks = Path(kindex.__file__).parent / "claude_modern" / "hooks"
+    assert json.loads((hooks / "package.json").read_text(encoding="utf-8"))["type"] == "module"
+
+
 def test_a_host_between_early_access_and_mods_is_refused(tmp_path, monkeypatch):
     installer, cfg, calls = _modern_install_with_host(tmp_path, monkeypatch, "2.1.280")
     with pytest.raises(ValueError, match="predates mods"):
