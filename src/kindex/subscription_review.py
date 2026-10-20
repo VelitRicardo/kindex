@@ -146,11 +146,7 @@ def _write(path, data: _PersistentModel):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        platform_io.fsync_directory(path.parent)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

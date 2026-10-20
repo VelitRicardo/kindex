@@ -128,3 +128,12 @@ def test_held_lock_does_not_block_reading_or_writing_the_file(tmp_path):
     finally:
         os.close(holder)
         os.close(writer)
+
+
+def test_fsync_directory_after_replace(tmp_path):
+    temporary = tmp_path / "state.tmp"
+    temporary.write_bytes(b"{}")
+    os.replace(temporary, tmp_path / "state.json")
+    platform_io.fsync_directory(tmp_path)
+    assert (tmp_path / "state.json").read_bytes() == b"{}"
+    assert not temporary.exists()

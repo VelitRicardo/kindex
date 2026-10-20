@@ -12,6 +12,9 @@ POSIX keeps ``O_NOFOLLOW`` and ``flock``. Windows has neither, so:
 
 Like ``flock``, the lock is per open descriptor, exclusive, and released when
 the descriptor is closed or the process exits.
+
+``fsync_directory`` makes a rename durable on POSIX. Windows cannot open a
+directory with ``os.open``; NTFS journals the rename itself, so it is a no-op.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ except ImportError:  # Windows
     fcntl = None
     import msvcrt
 
-__all__ = ["open_nofollow", "lock", "unlock"]
+__all__ = ["open_nofollow", "lock", "unlock", "fsync_directory"]
 
 _LOCK_OFFSET = 0x7FFFFFFF  # one byte past any realistic lock-file payload
 _RETRY_SECONDS = 0.01
@@ -95,3 +98,14 @@ def unlock(fd: int) -> None:
         fcntl.flock(fd, fcntl.LOCK_UN)
         return
     _locking(fd, msvcrt.LK_UNLCK)
+
+
+def fsync_directory(path) -> None:
+    """Flush a directory entry (e.g. after ``os.replace``) where the platform supports it."""
+    if os.name == "nt":
+        return
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
