@@ -870,7 +870,7 @@ def load_project_context(kin_path: Path) -> dict:
 
 def _infer_audience(project_root: Path) -> str:
     """Infer audience from directory heuristic."""
-    path_str = str(project_root).lower()
+    path_str = Path(project_root).as_posix().lower()
     if "/personal/" in path_str or "/gemweaver/" in path_str:
         return "private"
     if "/work/" in path_str:
