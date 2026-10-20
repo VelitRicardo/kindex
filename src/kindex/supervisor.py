@@ -167,12 +167,11 @@ def preflight(config, conversation: str) -> tuple[str, str] | None:
         return "budget_exhausted", "budget_unavailable"
     if config.sim.command:
         import shlex
-        import shutil
         try:
             command = platform_io.expanduser(shlex.split(config.sim.command)[0])
         except (ValueError, IndexError):
             return "unavailable", "command_unavailable"
-        if not shutil.which(command):
+        if not platform_io.shell_can_run(command):
             return "unavailable", "command_unavailable"
         if "simulacrum" in command and not any(os.environ.get(name) for name in
                 config.sim.api_key_env):

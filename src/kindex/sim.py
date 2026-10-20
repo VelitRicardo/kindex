@@ -559,9 +559,8 @@ def call_sim(
     if sc.command:
         import os
         import shlex
-        import shutil
         first = platform_io.expanduser(shlex.split(sc.command)[0])
-        if not shutil.which(first):
+        if not platform_io.shell_can_run(first):
             return None, {"status": "command_unavailable"}
         if "simulacrum" in first and not any(os.environ.get(name) for name in
                 sc.api_key_env):
@@ -1179,9 +1178,8 @@ def maybe_escalate_to_advocate(
         write_state(store, conversation_id, None, advocate_state="disabled", advocate_reason="recommend_only")
         return False, []
     import shlex
-    import shutil
     try:
-        available = bool(shutil.which(platform_io.expanduser(shlex.split(ac.command)[0])))
+        available = platform_io.shell_can_run(platform_io.expanduser(shlex.split(ac.command)[0]))
     except (ValueError, IndexError):
         available = False
     if not available:
