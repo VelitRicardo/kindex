@@ -21,6 +21,9 @@ directory with ``os.open``; NTFS journals the rename itself, so it is a no-op.
 ``USERPROFILE``; these honor ``HOME`` first, as git does, so Git Bash/MSYS
 users (and anything that isolates a run by setting ``HOME``) get the same home
 on every platform. An MSYS-style ``HOME=/c/Users/me`` is read as ``C:/Users/me``.
+
+``null_device`` maps the conventional ``/dev/null`` (e.g. ``--config /dev/null``
+for "no config") to Windows' ``nul`` when a program, not a shell, passes it.
 """
 
 from __future__ import annotations
@@ -38,7 +41,7 @@ except ImportError:  # Windows
     fcntl = None
     import msvcrt
 
-__all__ = ["open_nofollow", "lock", "unlock", "fsync_directory", "home", "expanduser"]
+__all__ = ["open_nofollow", "lock", "unlock", "fsync_directory", "home", "expanduser", "null_device"]
 
 _LOCK_OFFSET = 0x7FFFFFFF  # one byte past any realistic lock-file payload
 _RETRY_SECONDS = 0.01
@@ -142,3 +145,10 @@ def expanduser(path):
     else:
         text = os.path.expanduser(text)
     return type(path)(text) if isinstance(path, PurePath) else text
+
+
+def null_device(path):
+    """``os.devnull`` for ``/dev/null`` on Windows; any other path, and every path on POSIX, unchanged."""
+    if os.name == "nt" and os.fspath(path).replace("\\", "/") == "/dev/null":
+        return type(path)(os.devnull) if isinstance(path, PurePath) else os.devnull
+    return path

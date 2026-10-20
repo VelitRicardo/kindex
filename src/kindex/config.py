@@ -1184,7 +1184,7 @@ def _load_config(
     project_root = resolve_project_root(project_path)
 
     if config_path:
-        p = _resolve_path(config_path)
+        p = _resolve_path(platform_io.null_device(config_path))
         if not p.exists() and _bound_root is None:
             raise ValueError(f"Kindex config file not found: {config_path}")
         if p.exists():

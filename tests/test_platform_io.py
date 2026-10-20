@@ -188,3 +188,12 @@ def test_kindex_resolves_home_only_through_platform_io():
             elif func.attr == "home" and isinstance(func.value, ast.Name) and func.value.id == "Path":
                 offenders.append(f"{path.relative_to(package)}:{node.lineno} Path.home()")
     assert offenders == []
+
+
+def test_null_device_maps_dev_null_on_windows_only(monkeypatch):
+    monkeypatch.setattr(platform_io.os, "name", "nt")
+    assert platform_io.null_device("/dev/null") == os.devnull
+    assert platform_io.null_device(Path("/dev/null")) == Path(os.devnull)
+    assert platform_io.null_device("config.yaml") == "config.yaml"
+    monkeypatch.setattr(platform_io.os, "name", "posix")
+    assert platform_io.null_device("/dev/null") == "/dev/null"
