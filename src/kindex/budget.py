@@ -105,7 +105,7 @@ class BudgetLedger:
         if stamp is None:
             return [], None
         try:
-            text = self.path.read_text()
+            text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return [], None
         data = yaml.safe_load(text) or {}

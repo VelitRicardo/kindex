@@ -556,7 +556,7 @@ def _process_inbox(config: "Config", store: "Store", verbose: bool = False) -> i
     count = 0
     for md_file in sorted(inbox.glob("*.md")):
         try:
-            text = md_file.read_text(errors="replace").strip()
+            text = md_file.read_text(errors="replace", encoding="utf-8").strip()
         except OSError:
             continue
 

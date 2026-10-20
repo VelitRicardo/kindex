@@ -112,7 +112,7 @@ class _StateLock:
 
 def _read_state(path: Path) -> SchedulerState:
     try:
-        return SchedulerState.model_validate_json(path.read_text())
+        return SchedulerState.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return SchedulerState()
 
@@ -285,7 +285,7 @@ def _apply_launchd(interval: int, config: "Config") -> dict:
         return {"action": "disabled", "reload": "when-idle"}
 
     # Read current plist, update the interval
-    content = plist_path.read_text()
+    content = plist_path.read_text(encoding="utf-8")
     new_content, found = re.subn(
         r"(<key>StartInterval</key>\s*<integer>)\d+(</integer>)",
         rf"\g<1>{interval}\g<2>",
@@ -300,7 +300,7 @@ def _apply_launchd(interval: int, config: "Config") -> dict:
         # recorded and every run tried again.
         return {"action": "unchanged"}
 
-    plist_path.write_text(new_content)
+    plist_path.write_text(new_content, encoding="utf-8")
     _reload_when_idle(plist_path, config)
     return {"action": "updated", "reload": "when-idle"}
 
