@@ -1511,6 +1511,65 @@ def _write_all(fd: int, data: bytes) -> None:
         view = view[os.write(fd, view):]
 
 
+def _cap_degraded_ledger_windows(path: Path) -> None:
+    """The cap where an open file cannot be replaced (Windows), under the
+    cap's lock. The ledger is first moved aside: the move fails while an
+    appender holds it open (the cap is then declined), and once it succeeds
+    no append can reach the moved file, so it is read whole. The trimmed
+    ledger is renamed back without replacing; a ledger appenders created in
+    the meantime is moved aside and folded in after it. A run that cannot
+    finish appends what it holds instead (R4.1: no silent loss), and a
+    moved-aside file a crash left behind is read first on the next cap."""
+    import tempfile
+
+    binary = getattr(os, "O_BINARY", 0)  # os.open is text mode on Windows: \n became \r\n
+    aside = path.with_name(path.name + ".capping")
+    held = aside.read_bytes() if aside.exists() else b""
+    try:
+        os.replace(path, aside)
+    except OSError:
+        return  # an appender has it open: decline, the file grows for now
+    held += aside.read_bytes()
+    lines = held.splitlines(keepends=True)
+    if lines and not lines[-1].endswith(b"\n"):
+        lines[-1] += b"\n"
+    content = b"".join(lines[-_DEGRADED_KEEP_LINES:])
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        try:
+            os.fchmod(fd, 0o600)
+            _write_all(fd, content)
+        finally:
+            os.close(fd)
+        for _ in range(3):
+            try:
+                os.rename(tmp, path)  # never replaces on Windows
+                break
+            except FileExistsError:
+                pass
+            try:
+                os.replace(path, aside)  # fresh appends: fold them in after
+            except OSError:
+                continue
+            fresh = aside.read_bytes()
+            content += fresh
+            fd = os.open(str(tmp), os.O_WRONLY | os.O_APPEND | binary)
+            try:
+                _write_all(fd, fresh)
+            finally:
+                os.close(fd)
+        else:
+            fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT | binary, 0o600)
+            try:
+                _write_all(fd, content)
+            finally:
+                os.close(fd)
+        aside.unlink(missing_ok=True)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _try_cap_degraded_ledger(path: Path) -> None:
     """Try to cap the ledger under a non-blocking lock. If the lock is
     unavailable, decline (the file grows temporarily). When the cap runs,
@@ -1532,6 +1591,10 @@ def _try_cap_degraded_ledger(path: Path) -> None:
             platform_io.lock(lock_fd, blocking=False)
         except (BlockingIOError, OSError):
             return  # Lock unavailable — decline the cap, never block
+
+        if os.name == "nt":
+            _cap_degraded_ledger_windows(path)
+            return
 
         # Keep a handle to the current inode so we can detect appends
         # that land after our read but before os.replace.
