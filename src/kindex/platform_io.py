@@ -214,6 +214,16 @@ def _git_install_roots() -> list[Path]:
     return roots
 
 
+def shell_can_run(program: str) -> bool:
+    """Whether a shell command line can start ``program``: ``shutil.which``,
+    except that on Windows Git's sh also runs a script given by path (its
+    shebang), which ``which`` refuses for lacking a PATHEXT extension."""
+    if shutil.which(program):
+        return True
+    return (os.name == "nt" and os.path.dirname(program) != "" and os.path.isfile(program)
+            and posix_shell() is not None)
+
+
 def posix_shell() -> str | None:
     """``/bin/sh`` on POSIX; Git for Windows' ``sh.exe`` on Windows, or None when Git is absent."""
     if os.name != "nt":

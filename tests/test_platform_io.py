@@ -247,6 +247,22 @@ def test_posix_shell_falls_back_to_the_git_install_record(tmp_path, monkeypatch)
     assert platform_io.posix_shell() == str(install / "usr/bin/sh.exe")
 
 
+def test_shell_can_run_a_script_by_path_that_which_refuses_on_windows(tmp_path, monkeypatch):
+    script = tmp_path / "provider"
+    script.write_text("#!/bin/sh\ncat\n")
+    monkeypatch.setattr(platform_io.shutil, "which", lambda name: None)
+    monkeypatch.setattr(platform_io, "posix_shell", lambda: "sh.exe")
+    monkeypatch.setattr(platform_io.os, "name", "nt")
+    assert platform_io.shell_can_run(str(script))
+    assert not platform_io.shell_can_run("provider")  # a bare name still needs PATH
+    assert not platform_io.shell_can_run(str(tmp_path / "missing"))
+    monkeypatch.setattr(platform_io, "posix_shell", lambda: None)
+    assert not platform_io.shell_can_run(str(script))  # cmd.exe cannot run it
+    monkeypatch.setattr(platform_io.os, "name", "posix")
+    monkeypatch.setattr(platform_io, "posix_shell", lambda: "/bin/sh")
+    assert not platform_io.shell_can_run(str(script))  # POSIX keeps which's verdict
+
+
 def test_posix_shell_never_takes_a_bare_sh_or_bash_from_path(tmp_path, monkeypatch):
     # WSL puts bash.exe in System32; only Git's own sh.exe qualifies.
     loose = _git_tree(tmp_path / "System32", "bash.exe", "sh.exe")
