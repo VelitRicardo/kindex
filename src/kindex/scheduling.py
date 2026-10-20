@@ -123,7 +123,7 @@ def _write_state(path: Path, state: SchedulerState) -> None:
     import tempfile
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
     try:
-        with os.fdopen(fd, "w") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(state.model_dump_json())
         os.replace(tmp, path)
     except BaseException:

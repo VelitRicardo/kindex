@@ -228,7 +228,8 @@ def _merge_project_graph(path: Path, root: Path, data_dir: Path) -> None:
         return
     current[str(root)] = str(data_dir)
     with tempfile.NamedTemporaryFile(
-            "w", dir=path.parent, delete=False, prefix=".project-graphs.") as out:
+            "w", encoding="utf-8", dir=path.parent, delete=False,
+            prefix=".project-graphs.") as out:
         json.dump(current, out, sort_keys=True)
     os.replace(out.name, path)
 

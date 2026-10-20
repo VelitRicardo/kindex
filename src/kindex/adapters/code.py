@@ -292,7 +292,7 @@ def _run_ctags_once(files: list[Path], repo_root: Path) -> tuple[list[dict], boo
     if not files:
         return [], False
     # Write file list to a temp file to avoid arg length limits
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".txt", delete=False) as f:
         for path in files:
             f.write(str(path) + "\n")
         listfile = f.name

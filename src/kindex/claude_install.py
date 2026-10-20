@@ -20,7 +20,7 @@ def _atomic_json(path: Path, value: dict) -> None:
     import tempfile
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".kindex-install-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as stream:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
             stream.write(json.dumps(value, indent=2) + "\n")
             stream.flush()
             os.fsync(stream.fileno())

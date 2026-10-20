@@ -1226,5 +1226,6 @@ def write_kin_index(store: "Store", output_dir: Path) -> Path:
 
     output_path = output_dir / ".kin" / "index.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n",
+                           encoding="utf-8", newline="\n")
     return output_path

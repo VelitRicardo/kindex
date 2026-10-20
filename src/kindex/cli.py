@@ -3309,7 +3309,7 @@ def cmd_merge_kin(args):
     )
     if merged is None:
         sys.exit(1)
-    Path(args.ours).write_text(merged, encoding="utf-8")
+    Path(args.ours).write_text(merged, encoding="utf-8", newline="\n")
     print(f"merge-kin: resolved {args.path}", file=sys.stderr)
 
 
@@ -6496,12 +6496,12 @@ def cmd_setup_claude_md(args):
             if any(marker in existing for marker in _KINDEX_BLOCK_MARKERS):
                 print("Kindex directives already present in CLAUDE.md")
                 return
-            with open(claude_md, "a", encoding="utf-8") as f:
+            with open(claude_md, "a", encoding="utf-8", newline="\n") as f:
                 f.write("\n" + block)
             print(f"Appended kindex directives to {claude_md}")
         else:
             claude_md.parent.mkdir(parents=True, exist_ok=True)
-            claude_md.write_text(block, encoding="utf-8")
+            claude_md.write_text(block, encoding="utf-8", newline="\n")
             print(f"Created {claude_md} with kindex directives")
     else:
         print(block)
@@ -6524,12 +6524,12 @@ def cmd_setup_agents_md(args):
             if any(marker in existing for marker in _KINDEX_BLOCK_MARKERS):
                 print(f"Kindex directives already present in {agents_md}")
                 return
-            with open(agents_md, "a", encoding="utf-8") as f:
+            with open(agents_md, "a", encoding="utf-8", newline="\n") as f:
                 f.write("\n" + block)
             print(f"Appended kindex directives to {agents_md}")
         else:
             agents_md.parent.mkdir(parents=True, exist_ok=True)
-            agents_md.write_text(block, encoding="utf-8")
+            agents_md.write_text(block, encoding="utf-8", newline="\n")
             print(f"Created {agents_md} with kindex directives")
     else:
         print(block)
@@ -6567,12 +6567,12 @@ def cmd_setup_gemini_md(args):
             if any(marker in existing for marker in _KINDEX_BLOCK_MARKERS):
                 print(f"Kindex directives already present in {gemini_md}")
                 return
-            with open(gemini_md, "a", encoding="utf-8") as f:
+            with open(gemini_md, "a", encoding="utf-8", newline="\n") as f:
                 f.write("\n" + block)
             print(f"Appended kindex directives to {gemini_md}")
         else:
             gemini_md.parent.mkdir(parents=True, exist_ok=True)
-            gemini_md.write_text(block, encoding="utf-8")
+            gemini_md.write_text(block, encoding="utf-8", newline="\n")
             print(f"Created {gemini_md} with kindex directives")
     else:
         print(block)

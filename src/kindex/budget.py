@@ -217,7 +217,7 @@ class BudgetLedger:
         fd, tmp_name = tempfile.mkstemp(dir=str(self.path.parent),
                                         prefix=f".{self.path.name}.", suffix=".tmp")
         try:
-            with os.fdopen(fd, "w") as handle:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(body)
                 handle.flush()
                 os.fsync(handle.fileno())

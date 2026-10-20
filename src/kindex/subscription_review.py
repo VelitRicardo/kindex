@@ -139,7 +139,7 @@ def _read_state(path, schema, default=None):
 def _write(path, data: _PersistentModel):
     fd, temporary = tempfile.mkstemp(prefix=".receipt-", dir=path.parent)
     try:
-        with os.fdopen(fd, "w") as stream:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(data.model_dump(exclude_unset=True), stream)
             stream.flush()
             os.fsync(stream.fileno())
