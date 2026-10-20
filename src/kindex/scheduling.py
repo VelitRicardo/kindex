@@ -307,7 +307,8 @@ def _apply_launchd(interval: int, config: "Config") -> dict:
 
 def _apply_crontab(interval: int, config: "Config") -> dict:
     """Update the crontab entry with a new interval."""
-    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    from .setup import run_crontab
+    result = run_crontab("-l")
     if result.returncode != 0:
         return {"action": "skipped", "reason": "no crontab"}
 
@@ -338,8 +339,7 @@ def _apply_crontab(interval: int, config: "Config") -> dict:
             f"*/{minutes} * * * * {env} {kin_path} cron >> {log_dir}/cron.log 2>&1")
 
     new_crontab = "\n".join(new_lines) + "\n"
-    proc = subprocess.run(["crontab", "-"], input=new_crontab,
-                          capture_output=True, text=True)
+    proc = run_crontab("-", input=new_crontab)
     if proc.returncode == 0:
         return {"action": "disabled" if interval == 0 else "updated"}
     return {"action": "failed", "error": proc.stderr}

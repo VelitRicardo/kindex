@@ -1272,7 +1272,7 @@ def install_crontab(config: "Config", dry_run: bool = False) -> list[str]:
         return " ".join(schedule + default_line.split(None, 5)[5:])
 
     # Check existing crontab
-    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    result = run_crontab("-l")
     existing = result.stdout if result.returncode == 0 else ""
     lines = existing.splitlines()
 
@@ -1310,8 +1310,7 @@ def install_crontab(config: "Config", dry_run: bool = False) -> list[str]:
             actions.append(f"Failed to create log dir {log_dir}: {e}")
             return actions
         new_crontab = "\n".join([*kept, *final]) + "\n"
-        proc = subprocess.run(["crontab", "-"], input=new_crontab,
-                              capture_output=True, text=True)
+        proc = run_crontab("-", input=new_crontab)
         if proc.returncode == 0:
             for line in final:
                 actions.append(f"{verb} crontab: {line}")
@@ -1388,6 +1387,15 @@ def uninstall_reminder_daemon(dry_run: bool = False) -> list[str]:
         actions.append("No reminder daemon plist found")
 
     return actions
+
+
+def run_crontab(*args: str, input: str | None = None) -> subprocess.CompletedProcess:
+    """``crontab`` with its output captured. A system without crontab
+    (Windows) answers like a failed run: exit 127, the reason on stderr."""
+    try:
+        return subprocess.run(["crontab", *args], input=input, capture_output=True, text=True)
+    except OSError as error:
+        return subprocess.CompletedProcess(["crontab", *args], 127, "", str(error))
 
 
 def _find_kin_path() -> str:

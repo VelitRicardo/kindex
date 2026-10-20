@@ -6449,8 +6449,8 @@ def cmd_setup_cron(args):
             actions += uninstall_reminder_daemon(dry_run=dry_run)
         else:
             # Remove crontab entries (maintenance + reminder check)
-            import subprocess
-            result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+            from .setup import run_crontab
+            result = run_crontab("-l")
             if result.returncode == 0:
                 lines = result.stdout.splitlines()
                 # Match only our installed shapes — a bare "remind check"
@@ -6460,8 +6460,7 @@ def cmd_setup_cron(args):
                 if len(filtered) < len(lines):
                     if not dry_run:
                         new_crontab = "\n".join(filtered) + "\n"
-                        subprocess.run(["crontab", "-"], input=new_crontab,
-                                       capture_output=True, text=True)
+                        run_crontab("-", input=new_crontab)
                     actions = ["Removed crontab entries"]
                 else:
                     actions = ["No crontab entry found"]
