@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from .config import Config
     from .store import Store
 
+from . import platform_io
 from .schema import EDIT_POLICY
 
 from .privacy import protect_logger
