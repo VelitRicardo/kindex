@@ -7,6 +7,8 @@ import sqlite3
 import subprocess
 import tempfile
 
+from .platform_io import open_nofollow
+
 
 class ProjectStoreConflict(ValueError):
     pass
@@ -160,7 +162,7 @@ def ensure_local_ignored(data_path: Path) -> None:
     existing = ignore.read_bytes() if ignore.exists() else b""
     if b"local/" in (line.rstrip(b"\r") for line in existing.splitlines()):
         return
-    fd = os.open(str(ignore), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    fd = open_nofollow(ignore, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
         os.write(fd, (b"\n" if existing and not existing.endswith(b"\n") else b"") + b"local/\n")
     finally:

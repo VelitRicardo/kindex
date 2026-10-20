@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+from .platform_io import open_nofollow
 from .privacy import redact, redact_text, safe_error
 
 
@@ -50,7 +51,7 @@ def store_lock(store, name: str, *, blocking: bool = True):
     """OS releases the lock on worker exit; no stale sentinel or secret file."""
     store.config.data_path.mkdir(parents=True, exist_ok=True)
     path = store.config.data_path / (".supervisor-" + name + ".lock")
-    fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    fd = open_nofollow(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         yield

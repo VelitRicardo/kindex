@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from .platform_io import open_nofollow
 from .privacy import POLICY_VERSION, protect_logger, redact, redact_serialized, redact_text
 from .privacy import redacting_print as print
 
@@ -725,12 +726,9 @@ class Store:
         lock_path = self.db_path.with_name(
             f".{self.db_path.name}.schema-migration-lock.sqlite3"
         )
-        flags = os.O_CREAT | os.O_RDWR
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
         lock_conn: sqlite3.Connection | None = None
         try:
-            fd = os.open(lock_path, flags, 0o600)
+            fd = open_nofollow(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
             try:
                 if hasattr(os, "fchmod"):
                     os.fchmod(fd, 0o600)

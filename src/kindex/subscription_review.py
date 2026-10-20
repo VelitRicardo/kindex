@@ -27,6 +27,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .platform_io import open_nofollow
+
 _MAX_OUTPUT = 1024 * 1024
 _EXECUTABLES = {"codex": "codex", "claude": "claude", "antigravity": "agy"}
 
@@ -156,7 +158,7 @@ def _write(path, data: _PersistentModel):
 
 @contextmanager
 def _lock(path, *, deadline=None):
-    fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    fd = open_nofollow(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         if deadline is None:
             fcntl.flock(fd, fcntl.LOCK_EX)

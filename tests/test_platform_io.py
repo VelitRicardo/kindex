@@ -1,0 +1,130 @@
+"""Cross-platform no-follow opens and advisory locks (kindex.platform_io)."""
+
+import errno
+import os
+import stat
+
+import pytest
+
+from kindex import platform_io
+
+
+def _link_or_fake(monkeypatch, link, target):
+    """A real symlink where the platform allows it; otherwise lstat reports one."""
+    try:
+        os.symlink(target, link)
+        return
+    except (OSError, NotImplementedError):
+        pass
+    link.write_bytes(b"")
+    real_lstat = os.lstat
+
+    def fake_lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if os.fspath(path) == os.fspath(link):
+            return os.stat_result((stat.S_IFLNK | 0o777,) + tuple(info)[1:])
+        return info
+
+    monkeypatch.setattr(os, "lstat", fake_lstat)
+
+
+def test_open_nofollow_creates_and_reopens_regular_file(tmp_path):
+    path = tmp_path / "plain.lock"
+    fd = platform_io.open_nofollow(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.write(fd, b"data")
+    finally:
+        os.close(fd)
+    fd = platform_io.open_nofollow(path, os.O_RDONLY)
+    try:
+        assert os.read(fd, 4) == b"data"
+    finally:
+        os.close(fd)
+
+
+def test_open_nofollow_refuses_final_component_link(tmp_path, monkeypatch):
+    target = tmp_path / "target"
+    target.write_bytes(b"secret")
+    link = tmp_path / "link"
+    _link_or_fake(monkeypatch, link, target)
+    with pytest.raises(OSError) as raised:
+        platform_io.open_nofollow(link, os.O_RDWR | os.O_APPEND)
+    assert raised.value.errno == errno.ELOOP
+    assert target.read_bytes() == b"secret"
+
+
+def test_open_nofollow_refuses_link_swapped_in_after_the_first_check(tmp_path, monkeypatch):
+    if getattr(os, "O_NOFOLLOW", 0):
+        # The kernel checks atomically; the race only exists for the Windows path.
+        monkeypatch.delattr(os, "O_NOFOLLOW")
+    path = tmp_path / "raced"
+    path.write_bytes(b"")
+    real_lstat = os.lstat
+    calls = []
+    opened = []
+    real_open = os.open
+
+    def lstat_after_swap(target, *args, **kwargs):
+        info = real_lstat(target, *args, **kwargs)
+        calls.append(target)
+        if len(calls) > 1:
+            return os.stat_result((stat.S_IFLNK | 0o777,) + tuple(info)[1:])
+        return info
+
+    def recording_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        opened.append(fd)
+        return fd
+
+    monkeypatch.setattr(os, "lstat", lstat_after_swap)
+    monkeypatch.setattr(os, "open", recording_open)
+    with pytest.raises(OSError) as raised:
+        platform_io.open_nofollow(path, os.O_RDWR)
+    assert raised.value.errno == errno.ELOOP
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened[0])  # the descriptor of the refused open was closed
+
+
+def test_lock_is_exclusive_between_descriptors_and_released_by_unlock(tmp_path):
+    path = tmp_path / "x.lock"
+    first = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    second = os.open(path, os.O_RDWR)
+    try:
+        platform_io.lock(first)
+        with pytest.raises(BlockingIOError):
+            platform_io.lock(second, blocking=False)
+        platform_io.unlock(first)
+        platform_io.lock(second, blocking=False)
+        platform_io.unlock(second)
+    finally:
+        os.close(first)
+        os.close(second)
+
+
+def test_lock_is_released_when_the_descriptor_closes(tmp_path):
+    path = tmp_path / "x.lock"
+    first = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    second = os.open(path, os.O_RDWR)
+    try:
+        platform_io.lock(first, blocking=False)
+        os.close(first)
+        first = None
+        platform_io.lock(second, blocking=False)
+    finally:
+        if first is not None:
+            os.close(first)
+        os.close(second)
+
+
+def test_held_lock_does_not_block_reading_or_writing_the_file(tmp_path):
+    path = tmp_path / "ledger"
+    holder = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    writer = os.open(path, os.O_RDWR | os.O_APPEND | getattr(os, "O_BINARY", 0))
+    try:
+        platform_io.lock(holder)
+        assert os.write(writer, b"line\n") == 5
+        assert path.read_bytes() == b"line\n"
+    finally:
+        os.close(holder)
+        os.close(writer)
