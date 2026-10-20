@@ -1701,7 +1701,12 @@ class Store:
         except ValueError:
             return since_iso
         if parsed.tzinfo is None:
-            parsed = parsed.astimezone()
+            try:
+                parsed = parsed.astimezone()
+            except (OSError, OverflowError):
+                # Windows' localtime() refuses instants before the epoch
+                # (e.g. since=1970-01-01 west of UTC): use the epoch's offset.
+                parsed = parsed.replace(tzinfo=datetime.fromtimestamp(86400).astimezone().tzinfo)
         return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     def activity_counts_since(self, since_iso: str) -> dict[str, int]:
