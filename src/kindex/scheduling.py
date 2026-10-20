@@ -114,6 +114,11 @@ class _StateLock:
 def _read_state(path: Path) -> SchedulerState:
     try:
         return SchedulerState.model_validate_json(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"Scheduler state {path} is not UTF-8; file left unchanged. "
+            "Back it up and convert a copy after confirming its encoding."
+        ) from exc
     except (OSError, ValueError):
         return SchedulerState()
 

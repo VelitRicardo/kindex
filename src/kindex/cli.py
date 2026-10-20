@@ -4221,6 +4221,8 @@ def cmd_cron(args):
                 print(f"  Cron interval: {repack.get('previous', '?')}s -> {interval}s (adaptive)")
             elif action == "disabled":
                 print(f"  Cron interval: disabled (no pending reminders)")
+        for step, error in sorted(results.get("errors", {}).items()):
+            print(f"  {step} failed: {error}")
 
 
 # ── dream ─────────────────────────────────────────────────────────────

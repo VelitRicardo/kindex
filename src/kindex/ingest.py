@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -612,6 +613,15 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
 
             try:
                 data = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
+            except UnicodeDecodeError:
+                from .config import record_degraded
+                error = ValueError(
+                    f"Project config {config_file} is not UTF-8; file left unchanged. "
+                    "Back it up and convert a copy after confirming its encoding."
+                )
+                record_degraded("scan-kin-files", error, config)
+                print(f"  {error}", file=sys.stderr)
+                continue
             except Exception:
                 continue
 
@@ -628,6 +638,16 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
                     from .config import _load_kin_config_with_inheritance
                     raw_dir = _load_kin_config_with_inheritance(
                         config_file).get("data_dir")
+                except UnicodeError:
+                    from .config import record_degraded
+                    error = ValueError(
+                        f"Project config inherited by {config_file} is not UTF-8; "
+                        "source files left unchanged. Back them up and convert "
+                        "a copy after confirming their encoding."
+                    )
+                    record_degraded("scan-kin-files", error, config)
+                    print(f"  {error}", file=sys.stderr)
+                    raw_dir = None
                 except Exception:
                     raw_dir = None
             if raw_dir:
@@ -803,6 +823,11 @@ def _resolve_kin_recursive(
 
     try:
         data = yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
+    except UnicodeDecodeError as exc:
+        raise UnicodeError(
+            f"Project config {resolved} is not UTF-8; file left unchanged. "
+            "Back it up and convert a copy after confirming its encoding."
+        ) from exc
     except Exception:
         return
 
