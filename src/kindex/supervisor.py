@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import fcntl
 import hashlib
 import json
 import os
@@ -10,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+from . import platform_io
 from .platform_io import open_nofollow
 from .privacy import redact, redact_text, safe_error
 
@@ -53,7 +53,7 @@ def store_lock(store, name: str, *, blocking: bool = True):
     path = store.config.data_path / (".supervisor-" + name + ".lock")
     fd = open_nofollow(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        platform_io.lock(fd, blocking=blocking)
         yield
     finally:
         os.close(fd)

@@ -98,11 +98,8 @@ class _StateLock:
         import os
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            import fcntl
-            fcntl.flock(self.fd, fcntl.LOCK_EX)
-        except ImportError:
-            pass
+        from . import platform_io
+        platform_io.lock(self.fd)
         return self
 
     def __exit__(self, *exc):

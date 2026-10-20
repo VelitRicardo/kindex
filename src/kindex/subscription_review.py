@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
-import fcntl
 import hashlib
 import json
 import logging
@@ -27,6 +26,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from . import platform_io
 from .platform_io import open_nofollow
 
 _MAX_OUTPUT = 1024 * 1024
@@ -161,11 +161,11 @@ def _lock(path, *, deadline=None):
     fd = open_nofollow(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         if deadline is None:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            platform_io.lock(fd)
         else:
             while True:
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    platform_io.lock(fd, blocking=False)
                     break
                 except BlockingIOError:
                     remaining = deadline - time.monotonic()

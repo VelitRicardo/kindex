@@ -397,15 +397,13 @@ def _cron_lock_path(base_config: "Config"):
 
 
 def _try_cron_lock(base_config: "Config"):
-    """A non-blocking whole-run lock, None when the platform has no flock,
-    or False when another run holds it. Overlapping crontab runs raced on
+    """A non-blocking whole-run lock, None when the lock file cannot be
+    opened, or False when another run holds it. Overlapping crontab runs raced on
     session ingest and every unlocked queue."""
     import os
 
-    try:
-        import fcntl
-    except ImportError:
-        return None
+    from . import platform_io
+
     try:
         path = _cron_lock_path(base_config)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -413,7 +411,7 @@ def _try_cron_lock(base_config: "Config"):
     except OSError:
         return None
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        platform_io.lock(fd, blocking=False)
     except OSError:
         os.close(fd)
         return False

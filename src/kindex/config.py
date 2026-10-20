@@ -1517,7 +1517,7 @@ def _try_cap_degraded_ledger(path: Path) -> None:
     the read but before the replace goes to the old inode — the cap
     recovers it by re-reading the old inode's tail after the replace
     (R4.1: no silent loss). Never blocks."""
-    import fcntl
+    from . import platform_io
 
     try:
         if path.stat().st_size <= _DEGRADED_MAX_BYTES:
@@ -1528,7 +1528,7 @@ def _try_cap_degraded_ledger(path: Path) -> None:
         return
     try:
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            platform_io.lock(lock_fd, blocking=False)
         except (BlockingIOError, OSError):
             return  # Lock unavailable — decline the cap, never block
 
@@ -1578,7 +1578,7 @@ def _try_cap_degraded_ledger(path: Path) -> None:
         pass
     finally:
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            platform_io.unlock(lock_fd)
         except Exception:
             pass
         os.close(lock_fd)
