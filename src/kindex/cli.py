@@ -13,6 +13,7 @@ from pathlib import Path
 
 import yaml
 
+from . import platform_io
 from . import __version__
 from .privacy import redacting_print as print
 from .privacy import safe_error
@@ -3486,7 +3487,7 @@ def cmd_profile(args):
             markers.append("active")
         suffix = f" ({', '.join(markers)})" if markers else ""
         print(f"{name}{suffix}")
-        data_path = Path(entry.data_dir).expanduser()
+        data_path = platform_io.expanduser(Path(entry.data_dir))
         db = data_path / "kindex.db"
         if not db.exists() and (data_path / "conv.db").exists():
             db = data_path / "conv.db"
@@ -3555,7 +3556,7 @@ def _profile_create(args):
     # graph at the base data_dir that no profile registers stops receiving
     # routed sessions once a default profile exists.
     default_name = data.get("default_profile")
-    base_dir = Path(str(data.get("data_dir") or "~/.kindex")).expanduser()
+    base_dir = platform_io.expanduser(Path(str(data.get("data_dir") or "~/.kindex")))
     try:
         base_res = base_dir.resolve()
     except OSError:
@@ -3564,9 +3565,9 @@ def _profile_create(args):
     for entry in profiles.values():
         if isinstance(entry, dict) and entry.get("data_dir"):
             try:
-                registered.add(Path(str(entry["data_dir"])).expanduser().resolve())
+                registered.add(platform_io.expanduser(Path(str(entry["data_dir"]))).resolve())
             except OSError:
-                registered.add(Path(str(entry["data_dir"])).expanduser())
+                registered.add(platform_io.expanduser(Path(str(entry["data_dir"]))))
     legacy_db_exists = ((base_dir / "kindex.db").exists()
                         or (base_dir / "conv.db").exists())
     if base_res not in registered:
@@ -4029,7 +4030,7 @@ def cmd_register(args):
         print(f"Error: '{args.node_id}' not found.", file=sys.stderr)
         sys.exit(1)
 
-    filepath = Path(args.filepath).expanduser().resolve()
+    filepath = platform_io.expanduser(Path(args.filepath)).resolve()
     if not filepath.exists():
         print(f"Warning: '{filepath}' does not exist.", file=sys.stderr)
 
@@ -5397,7 +5398,7 @@ def cmd_supervisor_register(args):
     """
     from .supervisor_health import register_reviewer_session
 
-    project = str(Path(args.project or os.getcwd()).expanduser().resolve())
+    project = str(platform_io.expanduser(Path(args.project or os.getcwd())).resolve())
     try:
         result = register_reviewer_session(args.agent, args.session, project)
     except (OSError, ValueError, sqlite3.Error) as error:
@@ -6490,7 +6491,7 @@ def cmd_setup_claude_md(args):
     block = _kindex_claude_md_block()
 
     if getattr(args, "install", False):
-        claude_md = Path.home() / ".claude" / "CLAUDE.md"
+        claude_md = platform_io.home() / ".claude" / "CLAUDE.md"
         if claude_md.exists():
             existing = claude_md.read_text()
             if any(marker in existing for marker in _KINDEX_BLOCK_MARKERS):
@@ -7153,7 +7154,7 @@ def _config_write(key: str, value: str, config_path: str | None = None,
         )
         # Auto-upgrade old .kin file before searching local paths
         root = resolve_project_root(project_path)
-        _maybe_upgrade_kin_file((root / ".kin").expanduser().resolve())
+        _maybe_upgrade_kin_file(platform_io.expanduser(root / ".kin").resolve())
         path = None
         # Only this project's own files. The read path also inherits from
         # ancestor directories; writing to the first ancestor found silently

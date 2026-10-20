@@ -6,6 +6,7 @@ import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from . import platform_io
 from .privacy import safe_error
 from .privacy import redacting_print as print
 
@@ -325,7 +326,7 @@ def remind_check_all(base_config: "Config", verbose: bool = False) -> list[dict]
     else:
         for name, entry in profiles.items():
             cfg = base_config.model_copy(deep=True)
-            cfg.data_dir = str(Path(entry.data_dir).expanduser())
+            cfg.data_dir = str(platform_io.expanduser(Path(entry.data_dir)))
             # Anchor scheduler logs to the base dir (see cron_run_all).
             cfg._legacy_data_dir = (
                 getattr(base_config, "_legacy_data_dir", None) or base_config.data_dir
@@ -493,7 +494,7 @@ def _cron_run_all(base_config: "Config", verbose: bool = False) -> list[dict]:
     passes: list[dict] = []
     for name, entry in profiles.items():
         cfg = base_config.model_copy(deep=True)
-        cfg.data_dir = str(Path(entry.data_dir).expanduser())
+        cfg.data_dir = str(platform_io.expanduser(Path(entry.data_dir)))
         # Keep scheduler logs anchored to the base dir: this pass's config
         # reaches the adaptive repack (scheduling._apply_crontab), and the
         # crontab log target must not drift to a profile dir (issue #15).

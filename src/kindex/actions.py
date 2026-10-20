@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from . import platform_io
 from .privacy import redact_text, safe_error
 
 if TYPE_CHECKING:
@@ -390,8 +391,8 @@ def _resolve_cli(name: str) -> str | None:
         return found
     extra = [
         "/opt/homebrew/bin", "/usr/local/bin",
-        str(Path.home() / ".local" / "bin"), str(Path.home() / ".npm-global" / "bin"),
-        str(Path.home() / ".bun" / "bin"), str(Path.home() / ".cargo" / "bin"),
+        str(platform_io.home() / ".local" / "bin"), str(platform_io.home() / ".npm-global" / "bin"),
+        str(platform_io.home() / ".bun" / "bin"), str(platform_io.home() / ".cargo" / "bin"),
     ]
     return shutil.which(name, path=os.pathsep.join(extra))
 

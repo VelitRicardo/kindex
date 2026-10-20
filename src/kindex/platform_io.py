@@ -15,14 +15,22 @@ the descriptor is closed or the process exits.
 
 ``fsync_directory`` makes a rename durable on POSIX. Windows cannot open a
 directory with ``os.open``; NTFS journals the rename itself, so it is a no-op.
+
+``home`` and ``expanduser`` resolve ``~`` like ``Path.home`` and
+``os.path.expanduser`` on POSIX. On Windows, Python ignores ``HOME`` and reads
+``USERPROFILE``; these honor ``HOME`` first, as git does, so Git Bash/MSYS
+users (and anything that isolates a run by setting ``HOME``) get the same home
+on every platform. An MSYS-style ``HOME=/c/Users/me`` is read as ``C:/Users/me``.
 """
 
 from __future__ import annotations
 
 import errno
 import os
+import re
 import stat
 import time
+from pathlib import Path, PurePath
 
 try:
     import fcntl
@@ -30,7 +38,7 @@ except ImportError:  # Windows
     fcntl = None
     import msvcrt
 
-__all__ = ["open_nofollow", "lock", "unlock", "fsync_directory"]
+__all__ = ["open_nofollow", "lock", "unlock", "fsync_directory", "home", "expanduser"]
 
 _LOCK_OFFSET = 0x7FFFFFFF  # one byte past any realistic lock-file payload
 _RETRY_SECONDS = 0.01
@@ -109,3 +117,28 @@ def fsync_directory(path) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _windows_home() -> str | None:
+    value = os.environ.get("HOME") if os.name == "nt" else None
+    if not value:
+        return None
+    msys = re.match(r"^/([A-Za-z])(?=/|$)", value)
+    return f"{msys.group(1).upper()}:{value[2:] or '/'}" if msys else value
+
+
+def home() -> Path:
+    """``Path.home()``, except that on Windows a set ``HOME`` wins over ``USERPROFILE``."""
+    value = _windows_home()
+    return Path(value) if value else Path.home()
+
+
+def expanduser(path):
+    """``os.path.expanduser`` that follows ``home()``; returns the same type it was given."""
+    text = os.fspath(path)
+    value = _windows_home()
+    if value and (text == "~" or text[:2] in ("~/", "~\\")):
+        text = value + text[1:]
+    else:
+        text = os.path.expanduser(text)
+    return type(path)(text) if isinstance(path, PurePath) else text

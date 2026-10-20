@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import tempfile
 
+from . import platform_io
 from .platform_io import open_nofollow
 
 
@@ -92,7 +93,7 @@ def tracked_store_refusal(directory: Path) -> str | None:
     worktree, a store git cannot vouch for (git missing, timed out, or
     refusing the repository) is refused: the answer must come from git.
     """
-    directory = Path(directory).expanduser()
+    directory = platform_io.expanduser(Path(directory))
     if not directory.exists():
         return None
     real = directory.resolve()
@@ -173,7 +174,7 @@ def project_graph_registry_path() -> Path:
     """The machine's record of repo-local graphs opened outside any profile,
     beside the scheduler state."""
     base = os.environ.get("XDG_STATE_HOME", "").strip()
-    state = Path(base) if base else Path.home() / ".local" / "state"
+    state = Path(base) if base else platform_io.home() / ".local" / "state"
     return state / "kindex" / "project-graphs.json"
 
 

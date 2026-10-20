@@ -6,6 +6,7 @@ import datetime
 
 import pytest
 
+from kindex import platform_io
 from kindex.config import Config, ReminderConfig, ScheduleTier
 from kindex.store import Store
 
@@ -339,7 +340,7 @@ def test_a_repack_inside_the_job_reloads_it_only_once_it_is_idle(tmp_path, monke
 
     from kindex import scheduling
 
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(platform_io, "home", lambda: tmp_path)
     plist = _cron_plist(tmp_path, 300)
     ran, spawned = [], []
     monkeypatch.setattr(scheduling.subprocess, "run", lambda *a, **k: ran.append(a))
@@ -365,7 +366,7 @@ def test_a_plist_already_at_the_interval_is_unchanged_not_unrecognized(tmp_path,
 
     from kindex import scheduling
 
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(platform_io, "home", lambda: tmp_path)
     spawned = []
     monkeypatch.setattr(
         scheduling.subprocess, "Popen", lambda argv, **k: spawned.append(argv)
@@ -482,7 +483,7 @@ def test_setup_cron_keeps_the_repacked_interval(tmp_path, monkeypatch):
     from kindex import scheduling
     from kindex import setup as ksetup
 
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(platform_io, "home", lambda: tmp_path)
     monkeypatch.setattr(ksetup.subprocess, "run", lambda *a, **k: None)
     monkeypatch.setattr(ksetup, "_find_kin_path", lambda: "/usr/local/bin/kin")
     monkeypatch.setattr(ksetup, "scheduler_path", lambda: "/usr/bin:/bin")

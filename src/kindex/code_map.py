@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
+from . import platform_io
 from .adapters.base import IngestResult
 
 if TYPE_CHECKING:
@@ -101,7 +102,7 @@ def _node_matches_root(node: dict, root: Path | None) -> bool:
     repo_root = extra.get("repo_root")
     if repo_root:
         try:
-            if Path(repo_root).expanduser().resolve() == root:
+            if platform_io.expanduser(Path(repo_root)).resolve() == root:
                 return True
         except OSError:
             pass
@@ -154,7 +155,7 @@ def _relative_to_root(value: str, root: Path) -> str | None:
             return None
 
     try:
-        return Path(value).expanduser().resolve().relative_to(root).as_posix()
+        return platform_io.expanduser(Path(value)).resolve().relative_to(root).as_posix()
     except (OSError, ValueError):
         return None
 
@@ -189,7 +190,7 @@ def _effective_root(node: dict, root: Path | None) -> Path | None:
     effective_root = root
     if extra.get("repo_root"):
         try:
-            effective_root = Path(str(extra["repo_root"])).expanduser().resolve()
+            effective_root = platform_io.expanduser(Path(str(extra["repo_root"]))).resolve()
         except OSError:
             effective_root = None
     return effective_root
@@ -461,7 +462,7 @@ def _ua_kindex_id(source_id: str) -> str:
 
 
 def _resolve_ua_graph(path_or_directory: str | Path) -> Path:
-    path = Path(path_or_directory).expanduser().resolve()
+    path = platform_io.expanduser(Path(path_or_directory)).resolve()
     if path.is_dir():
         path = path / ".understand-anything" / "knowledge-graph.json"
     return path

@@ -1,8 +1,10 @@
 """Cross-platform no-follow opens and advisory locks (kindex.platform_io)."""
 
+import ast
 import errno
 import os
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -137,3 +139,52 @@ def test_fsync_directory_after_replace(tmp_path):
     platform_io.fsync_directory(tmp_path)
     assert (tmp_path / "state.json").read_bytes() == b"{}"
     assert not temporary.exists()
+
+
+def test_home_follows_HOME_even_where_python_reads_USERPROFILE(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
+    assert platform_io.home() == tmp_path / "home"
+    assert platform_io.expanduser("~/.kindex") == str(tmp_path / "home") + "/.kindex"
+    assert platform_io.expanduser(Path("~") / ".kindex") == tmp_path / "home" / ".kindex"
+    assert isinstance(platform_io.expanduser(Path("~")), Path)
+    assert isinstance(platform_io.expanduser("~"), str)
+
+
+def test_paths_without_a_leading_tilde_are_unchanged(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert platform_io.expanduser("relative/~/x") == "relative/~/x"
+    assert platform_io.expanduser(Path("a") / "b") == Path("a") / "b"
+
+
+def test_windows_reads_an_msys_HOME(monkeypatch):
+    monkeypatch.setattr(platform_io.os, "name", "nt")
+    monkeypatch.setenv("HOME", "/c/Users/me")
+    assert platform_io.home() == Path("C:/Users/me")
+    assert platform_io.expanduser("~/.kindex") == "C:/Users/me/.kindex"
+    monkeypatch.setenv("HOME", "/d")
+    assert platform_io.home() == Path("D:/")
+
+
+def test_unset_HOME_falls_back_to_the_platform_home(monkeypatch):
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setattr(platform_io.os, "name", "nt")
+    assert platform_io.home() == Path.home()
+
+
+def test_kindex_resolves_home_only_through_platform_io():
+    """Path.home() and expanduser ignore HOME on Windows; every caller goes through platform_io."""
+    package = Path(platform_io.__file__).parent
+    offenders = []
+    for path in sorted(package.rglob("*.py")):
+        if path.name == "platform_io.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            func = node.func
+            if func.attr == "expanduser" and not (isinstance(func.value, ast.Name) and func.value.id == "platform_io"):
+                offenders.append(f"{path.relative_to(package)}:{node.lineno} expanduser")
+            elif func.attr == "home" and isinstance(func.value, ast.Name) and func.value.id == "Path":
+                offenders.append(f"{path.relative_to(package)}:{node.lineno} Path.home()")
+    assert offenders == []

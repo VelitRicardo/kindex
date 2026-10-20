@@ -96,7 +96,7 @@ def write_state(store, conversation_id: str, state: str | None, **fields):
 
 def _transcript(path: str, limit: int) -> tuple[str, str]:
     """Bounded head goal plus recent transcript, supporting Claude/Codex JSONL."""
-    target = Path(path).expanduser()
+    target = platform_io.expanduser(Path(path))
     if not target.is_file():
         raise ValueError("Supervisor transcript is unavailable")
     with target.open("rb") as stream:
@@ -169,7 +169,7 @@ def preflight(config, conversation: str) -> tuple[str, str] | None:
         import shlex
         import shutil
         try:
-            command = os.path.expanduser(shlex.split(config.sim.command)[0])
+            command = platform_io.expanduser(shlex.split(config.sim.command)[0])
         except (ValueError, IndexError):
             return "unavailable", "command_unavailable"
         if not shutil.which(command):

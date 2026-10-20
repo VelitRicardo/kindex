@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from . import platform_io
 from .privacy import redact, redact_text
 from .privacy import redacting_print as print
 
@@ -631,7 +632,7 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
                 except Exception:
                     raw_dir = None
             if raw_dir:
-                resolved_dir = Path(str(raw_dir)).expanduser()
+                resolved_dir = platform_io.expanduser(Path(str(raw_dir)))
                 if not resolved_dir.is_absolute():
                     resolved_dir = project_root / resolved_dir
                 # The reminder sweep runs shell actions from every registered

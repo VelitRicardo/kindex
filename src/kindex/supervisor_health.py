@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
+from . import platform_io
 from .platform_io import open_nofollow
 from .supervisor_notifications import REASONS, SUBMISSION_TIMEOUT_SECONDS, diagnostic_command
 
@@ -57,7 +58,7 @@ def _iso(value):
 
 
 def health_dir():
-    return Path(os.environ.get("KIN_HEALTH_DIR", str(Path.home() / ".kindex" / "health"))).expanduser()
+    return platform_io.expanduser(Path(os.environ.get("KIN_HEALTH_DIR", str(platform_io.home() / ".kindex" / "health"))))
 
 
 def settings():
@@ -500,7 +501,7 @@ def install_monitor(*, uninstall=False, dry_run=False):
         raise ValueError("Independent launchd installation requires macOS")
     root = health_dir().resolve()
     label = "com.kindex.supervisor-health"
-    plist = Path.home() / "Library/LaunchAgents" / (label + ".plist")
+    plist = platform_io.home() / "Library/LaunchAgents" / (label + ".plist")
     command = [sys.executable, "-m", "kindex.supervisor_health", "check", "--json", "--quiet"]
     configuration = root / "config.json"
     old = json.loads(configuration.read_text()) if configuration.exists() else {}
@@ -535,7 +536,7 @@ def install_monitor(*, uninstall=False, dry_run=False):
         os.fchmod(fd, 0o600)
         os.close(fd)
     payload = {"Label": label, "ProgramArguments": command, "StartInterval": 60,
-               "RunAtLoad": True, "WorkingDirectory": str(Path.home()),
+               "RunAtLoad": True, "WorkingDirectory": str(platform_io.home()),
                "EnvironmentVariables": {"KIN_HEALTH_DIR": str(root), "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
                "StandardOutPath": str(root / "stdout.log"), "StandardErrorPath": str(root / "stderr.log")}
     previous_plist = plist.read_bytes() if plist.exists() else None

@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from . import platform_io
+
 if TYPE_CHECKING:
     from .config import Config
     from .store import Store
@@ -73,7 +75,7 @@ def _scheduler_state_path(config: "Config") -> Path:
     one."""
     import os
     base = os.environ.get("XDG_STATE_HOME", "").strip()
-    root = Path(base) if base else Path.home() / ".local" / "state"
+    root = Path(base) if base else platform_io.home() / ".local" / "state"
     return root / "kindex" / "scheduler-state.json"
 
 
@@ -270,7 +272,7 @@ def apply_schedule(interval: int, config: "Config") -> dict:
 
 def _apply_launchd(interval: int, config: "Config") -> dict:
     """Update the launchd plist with a new interval."""
-    plist_path = Path.home() / "Library" / "LaunchAgents" / "com.kindex.cron.plist"
+    plist_path = platform_io.home() / "Library" / "LaunchAgents" / "com.kindex.cron.plist"
 
     if not plist_path.exists():
         if interval == 0:

@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from . import platform_io
 from .platform_io import open_nofollow
 from .privacy import POLICY_VERSION, protect_logger, redact, redact_serialized, redact_text
 from .privacy import redacting_print as print
@@ -402,7 +403,7 @@ class Store:
             # symlinked .kin and hide it from the guard.
             if self._manage_project_storage:
                 from .project_store import ensure_local_ignored
-                ensure_local_ignored(Path(os.path.abspath(os.path.expanduser(self.config.data_dir))))
+                ensure_local_ignored(Path(os.path.abspath(platform_io.expanduser(self.config.data_dir))))
             self.config.data_path.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(
                 str(self.db_path),

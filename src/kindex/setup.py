@@ -11,6 +11,8 @@ from xml.sax.saxutils import escape
 
 from pydantic import BaseModel, Field
 
+from . import platform_io
+
 
 def _binding_refused() -> list[str] | None:
     """Under an active config binding, refuse to touch the machine's real
@@ -1039,7 +1041,7 @@ def install_launchd(config: "Config", dry_run: bool = False) -> list[str]:
         return refused
     actions = []
     kin_path = _find_kin_path()
-    launch_agents = Path.home() / "Library" / "LaunchAgents"
+    launch_agents = platform_io.home() / "Library" / "LaunchAgents"
     plist_path = launch_agents / "com.kindex.cron.plist"
     log_dir = config.scheduler_log_path
     from .scheduling import applied_interval
@@ -1052,7 +1054,7 @@ def install_launchd(config: "Config", dry_run: bool = False) -> list[str]:
         stdout_path=f"{log_dir}/cron.log",
         stderr_path=f"{log_dir}/cron-error.log",
         environment=scheduler_environment(),
-        working_directory=str(Path.home()),
+        working_directory=str(platform_io.home()),
     )
 
     if not dry_run:
@@ -1101,7 +1103,7 @@ def scheduler_environment() -> dict[str, str]:
     stamp each line it writes to the job's log with the time it happened."""
     from .logstamp import ENV_VAR
 
-    return {"PATH": scheduler_path(), "HOME": str(Path.home()), ENV_VAR: "1"}
+    return {"PATH": scheduler_path(), "HOME": str(platform_io.home()), ENV_VAR: "1"}
 
 
 def scheduler_path() -> str:
@@ -1178,7 +1180,7 @@ def _launchd_plist(*, label: str, program_args: list[str], interval: int,
 
 def reload_launchd() -> bool:
     """Unload and reload the cron plist. Returns True if successful."""
-    plist_path = Path.home() / "Library" / "LaunchAgents" / "com.kindex.cron.plist"
+    plist_path = platform_io.home() / "Library" / "LaunchAgents" / "com.kindex.cron.plist"
     if not plist_path.exists():
         return False
     subprocess.run(["launchctl", "unload", str(plist_path)],
@@ -1194,7 +1196,7 @@ def uninstall_launchd(dry_run: bool = False) -> list[str]:
     if refused:
         return refused
     actions = []
-    plist_path = Path.home() / "Library" / "LaunchAgents" / "com.kindex.cron.plist"
+    plist_path = platform_io.home() / "Library" / "LaunchAgents" / "com.kindex.cron.plist"
 
     if plist_path.exists():
         if not dry_run:
@@ -1336,7 +1338,7 @@ def install_reminder_daemon(config: "Config", dry_run: bool = False) -> list[str
         return refused
     actions = []
     kin_path = _find_kin_path()
-    launch_agents = Path.home() / "Library" / "LaunchAgents"
+    launch_agents = platform_io.home() / "Library" / "LaunchAgents"
     plist_path = launch_agents / "com.kindex.reminders.plist"
     log_dir = config.scheduler_log_path
     interval = min(300, max(60, int(config.reminders.check_interval or 300)))
@@ -1349,7 +1351,7 @@ def install_reminder_daemon(config: "Config", dry_run: bool = False) -> list[str
         stdout_path=f"{log_dir}/reminders.log",
         stderr_path=f"{log_dir}/reminders-error.log",
         environment=scheduler_environment(),
-        working_directory=str(Path.home()),
+        working_directory=str(platform_io.home()),
     )
 
     if not dry_run:
@@ -1371,7 +1373,7 @@ def uninstall_reminder_daemon(dry_run: bool = False) -> list[str]:
     if refused:
         return refused
     actions = []
-    plist_path = Path.home() / "Library" / "LaunchAgents" / "com.kindex.reminders.plist"
+    plist_path = platform_io.home() / "Library" / "LaunchAgents" / "com.kindex.reminders.plist"
 
     if plist_path.exists():
         if not dry_run:
