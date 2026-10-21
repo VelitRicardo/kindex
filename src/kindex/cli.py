@@ -6138,7 +6138,10 @@ def cmd_context_query(args):
         store = open_query_store(config)
         arguments = {key: getattr(request, key) for key in QueryContextRequest.model_fields}
         print(_dumps(prepare_query_context(store, **arguments), ensure_ascii=True))
-    except (ValueError, sqlite3.Error) as error:
+    except sqlite3.Error:
+        print(_dumps({"error": "Query context is unavailable"}, ensure_ascii=True), file=sys.stderr)
+        raise SystemExit(2)
+    except ValueError as error:
         print(_dumps({"error": safe_error(error)}, ensure_ascii=True), file=sys.stderr)
         raise SystemExit(2)
     finally:
@@ -6151,10 +6154,11 @@ def cmd_evidence(args):
     from .evidence import (source_snapshot, retain_evidence, inspect_evidence,
                            project_evidence, _selected_ref)
     from .sessions import normalize_project_path
-    store = _store(args)
+    store = None
     # Match native CLI session start/resume ownership, including subdirectories.
     project = os.getcwd()
     try:
+        store = _store(args)
         action = args.evidence_command
         if action == "snapshot":
             result = source_snapshot(store, args.node, project_path=project)
@@ -6178,11 +6182,15 @@ def cmd_evidence(args):
                 action=args.action, max_aux_bytes=args.max_aux_bytes,
             )
         print(_dumps(result, ensure_ascii=True))
+    except sqlite3.Error:
+        print(_dumps({"error": "Evidence is unavailable"}, ensure_ascii=True), file=sys.stderr)
+        raise SystemExit(2)
     except (ValueError, KeyError, UnicodeError) as error:
         print(_dumps({"error": str(error)}, ensure_ascii=True), file=sys.stderr)
         raise SystemExit(2)
     finally:
-        store.close()
+        if store is not None:
+            store.close()
 
 
 def cmd_tag(args):
