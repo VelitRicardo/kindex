@@ -27,7 +27,9 @@ def _step_failed(results: dict, step: str, error: BaseException) -> None:
     """A maintenance step that failed is reported in `errors` and the degraded
     ledger. It used to report 0 with no signal, so a failing drain looked like
     an empty queue."""
-    results.setdefault("errors", {})[step] = safe_error(error)
+    errors = results.setdefault("errors", {})
+    message = safe_error(error)
+    errors[step] = f"{errors[step]}\n{message}" if step in errors else message
     try:
         from .config import record_degraded
         record_degraded("cron", error)

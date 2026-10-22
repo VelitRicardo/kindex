@@ -6,10 +6,10 @@ from pathlib import Path
 import pytest
 
 import kindex
-from kindex.config import Config
+from kindex.config import Config, read_degraded_events
 from kindex.daemon import _process_inbox
 from kindex.hooks import write_inbox_item
-from kindex.ingest import scan_kin_files
+from kindex.ingest import resolve_kin_chain, scan_kin_files
 from kindex.scheduling import SchedulerState, StoreReport, _read_state, _write_state
 from kindex.store import Store
 
@@ -126,6 +126,24 @@ def test_legacy_inbox_item_remains_unprocessed(tmp_path):
         store.close()
 
 
+def test_multiple_legacy_inbox_items_report_every_path(tmp_path):
+    config = Config(data_dir=str(tmp_path))
+    config.inbox_dir.mkdir(parents=True)
+    items = [config.inbox_dir / name for name in ("first.md", "second.md")]
+    for item in items:
+        item.write_bytes("Café booking request".encode("cp1252"))
+    store = Store(config)
+    try:
+        results = {}
+        assert _process_inbox(config, store, results=results) == 0
+        assert results["inbox_decode_errors"] == 2
+        for item in items:
+            assert str(item) in results["errors"]["inbox"]
+            assert item.read_bytes() == "Café booking request".encode("cp1252")
+    finally:
+        store.close()
+
+
 def test_legacy_scheduler_state_is_not_reset(tmp_path):
     path = tmp_path / "scheduler-state.json"
     raw = SchedulerState(
@@ -151,5 +169,23 @@ def test_legacy_project_config_is_reported_and_preserved(tmp_path, capsys):
         assert scan_kin_files(config, store) == 0
     finally:
         store.close()
+    assert "not UTF-8" not in capsys.readouterr().err
+    assert any("not UTF-8" in event["msg"]
+               for event in read_degraded_events(config))
+    store = Store(config)
+    try:
+        assert scan_kin_files(config, store, verbose=True) == 0
+    finally:
+        store.close()
     assert "not UTF-8" in capsys.readouterr().err
+    assert config_file.read_bytes() == raw
+
+
+def test_direct_kin_chain_reports_legacy_config_without_modifying_it(tmp_path):
+    config_file = tmp_path / ".kin" / "config"
+    config_file.parent.mkdir()
+    raw = "name: Café\n".encode("cp1252")
+    config_file.write_bytes(raw)
+    with pytest.raises(UnicodeError, match="Back it up and convert a copy"):
+        resolve_kin_chain(config_file)
     assert config_file.read_bytes() == raw

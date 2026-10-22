@@ -1483,7 +1483,7 @@ def install_merge_driver(root: "Path", dry_run: bool = False) -> list[str]:
         lines.append("")
     lines.append(_KIN_MERGE_ATTR_HEADER)
     lines.extend(missing)
-    attrs_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    attrs_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     actions.append(f"updated {attrs_path} (+{len(missing)} entries)")
     return actions
 
@@ -1509,9 +1509,9 @@ def uninstall_merge_driver(root: "Path", dry_run: bool = False) -> list[str]:
         if dry_run:
             actions.append(f"[dry-run] strip kindex entries from {attrs_path}")
         elif any(ln.strip() for ln in kept):
-            attrs_path.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
+            attrs_path.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8", newline="\n")
             actions.append(f"stripped kindex entries from {attrs_path}")
         else:
-            attrs_path.write_text("", encoding="utf-8")
+            attrs_path.write_text("", encoding="utf-8", newline="\n")
             actions.append(f"cleared {attrs_path}")
     return actions

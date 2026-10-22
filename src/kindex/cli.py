@@ -6473,7 +6473,11 @@ def cmd_setup_cron(args):
         # reminder delivery must never wait behind a slow maintenance run.
         if method == "launchd":
             from .setup import install_launchd, install_reminder_daemon
-            actions = install_launchd(cfg, dry_run=dry_run)
+            try:
+                actions = install_launchd(cfg, dry_run=dry_run)
+            except ValueError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                raise SystemExit(2) from exc
             actions += install_reminder_daemon(cfg, dry_run=dry_run)
         else:
             from .setup import install_crontab
@@ -6704,7 +6708,7 @@ def cmd_setup_cursor_rules(args):
             print(f"Kindex Cursor rule already present at {rule_path}")
             return
         rule_path.parent.mkdir(parents=True, exist_ok=True)
-        rule_path.write_text(block, encoding="utf-8")
+        rule_path.write_text(block, encoding="utf-8", newline="\n")
         print(f"Created {rule_path} with kindex directives")
     else:
         print(block)

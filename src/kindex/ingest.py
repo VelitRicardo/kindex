@@ -620,7 +620,8 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
                     "Back it up and convert a copy after confirming its encoding."
                 )
                 record_degraded("scan-kin-files", error, config)
-                print(f"  {error}", file=sys.stderr)
+                if verbose:
+                    print(f"  {error}", file=sys.stderr)
                 continue
             except Exception:
                 continue
