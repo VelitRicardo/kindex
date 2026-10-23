@@ -1405,6 +1405,153 @@ _KIN_MERGE_ATTRS = (
     ".kin/code-map.json merge=kindex",
 )
 _KIN_MERGE_ATTR_HEADER = "# Kindex generated artifacts: structured union merge"
+_KIN_TEXT_ATTRS = (
+    ".kin/config text eol=lf !working-tree-encoding -filter -ident",
+    ".kin/*.json text eol=lf !working-tree-encoding -filter -ident",
+    ".kin/*.jsonl text eol=lf !working-tree-encoding -filter -ident",
+    ".kin/*.md text eol=lf !working-tree-encoding -filter -ident",
+)
+_KIN_TEXT_ATTR_HEADER = "# Kindex tracked text: UTF-8 bytes and LF in every worktree"
+
+
+def _kin_text_relative(root: Path, path: Path) -> Path | None:
+    try:
+        relative = path.absolute().relative_to(root.absolute())
+    except ValueError:
+        return None
+    if (len(relative.parts) != 2 or relative.parts[0] != ".kin"
+            or not (relative.name == "config" or relative.suffix in {".json", ".jsonl", ".md"})):
+        return None
+    return relative
+
+
+def _kin_text_attributes(root: Path, relative: Path) -> dict[str, str]:
+    names = ("text", "eol", "working-tree-encoding", "filter", "ident")
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "check-attr", "-z", *names, "--", relative.as_posix()],
+            capture_output=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f"Cannot inspect Git attributes for {relative}: {exc}") from exc
+    if result.returncode:
+        raise ValueError(f"Cannot inspect Git attributes for {relative}: "
+                         f"{result.stderr.decode('utf-8', errors='replace').strip()}")
+    fields = result.stdout.split(b"\0")
+    if len(fields) != len(names) * 3 + 1 or fields[-1] != b"":
+        raise ValueError(f"Unexpected Git attributes for {relative}")
+    return {fields[i + 1].decode("utf-8"): fields[i + 2].decode("utf-8")
+            for i in range(0, len(names) * 3, 3)}
+
+
+def kin_text_attribute_findings(root: Path, path: Path) -> tuple[list[str], list[str]]:
+    """Return unsafe transformations and missing LF policy for one tracked text path."""
+    relative = _kin_text_relative(root, path)
+    if relative is None:
+        return [], []
+    attrs = _kin_text_attributes(root, relative)
+    errors = []
+    warnings = []
+    encoding = attrs["working-tree-encoding"]
+    if encoding not in {"unspecified", "unset"} and encoding.upper() != "UTF-8":
+        errors.append(f"{relative}: working-tree-encoding={encoding} can change UTF-8 bytes")
+    if attrs["filter"] not in {"unspecified", "unset"}:
+        errors.append(f"{relative}: filter={attrs['filter']} can change file contents")
+    if attrs["ident"] == "set":
+        errors.append(f"{relative}: ident substitution can change file contents")
+    if attrs["text"] == "unset" or attrs["eol"] == "crlf":
+        errors.append(f"{relative}: text={attrs['text']}, eol={attrs['eol']} conflicts with LF text")
+    elif attrs["text"] not in {"set", "auto"} or attrs["eol"] != "lf":
+        warnings.append(f"{relative}: LF text attributes are not pinned; run `kin setup-merge`")
+    return errors, warnings
+
+
+def require_kin_text_attributes(path: Path) -> None:
+    """Refuse a Git transform that can reinterpret a tracked .kin text file."""
+    root = git_repo_root(path.parent)
+    if root is None:
+        return
+    errors, _ = kin_text_attribute_findings(root, path)
+    if errors:
+        raise ValueError("Unsafe Git attributes: " + "; ".join(errors)
+                         + ". Run `git check-attr --all -- "
+                         + _kin_text_relative(root, path).as_posix()
+                         + "` in that repository and repair a copy of any changed file before retrying.")
+
+
+def install_kin_text_attributes(root: Path, dry_run: bool = False) -> list[str]:
+    """Pin Git-shared .kin text without touching ignored binary/local state."""
+    attrs_path = root / ".gitattributes"
+    existing = attrs_path.read_text(encoding="utf-8").splitlines() if attrs_path.exists() else []
+    have = {line.strip() for line in existing}
+    missing = [line for line in _KIN_TEXT_ATTRS if line not in have]
+    if not missing:
+        return []
+    if dry_run:
+        return [f"[dry-run] add to .gitattributes: {missing}"]
+    lines = list(existing)
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.append(_KIN_TEXT_ATTR_HEADER)
+    lines.extend(missing)
+    attrs_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return [f"updated {attrs_path} (+{len(missing)} UTF-8/LF entries)"]
+
+
+def prepare_kin_text_write(path: Path) -> None:
+    """Install repo policy, then reject local overrides or legacy bytes."""
+    root = git_repo_root(path.parent)
+    if root is None or _kin_text_relative(root, path) is None:
+        return
+    if path.is_symlink():
+        raise ValueError(f"Refusing symlinked .kin text file {path}")
+    install_kin_text_attributes(root)
+    require_kin_text_attributes(path)
+    if path.exists():
+        try:
+            path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(
+                f"{path} is not UTF-8; file left unchanged. Back it up and "
+                "convert a copy after confirming its encoding."
+            ) from exc
+
+
+def audit_kin_text_attributes(root: Path) -> tuple[list[str], list[str]]:
+    """Inspect effective attributes and bytes before doctor loads .kin/config."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--", ".kin"],
+            capture_output=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ["Cannot list tracked .kin files for Git attribute audit"], []
+    if result.returncode:
+        return ["Cannot list tracked .kin files for Git attribute audit"], []
+    errors = []
+    warnings = []
+    tracked = {root / raw.decode("utf-8", errors="surrogateescape")
+               for raw in result.stdout.split(b"\0") if raw}
+    local = set((root / ".kin").iterdir()) if (root / ".kin").is_dir() else set()
+    for path in sorted(tracked | local):
+        if _kin_text_relative(root, path) is None or path.is_dir():
+            continue
+        if path.is_symlink():
+            errors.append(f"{path.relative_to(root)} is symlinked; inspect before reading")
+            continue
+        try:
+            problems, cautions = kin_text_attribute_findings(root, path)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        errors.extend(problems)
+        warnings.extend(cautions)
+        if path.is_file():
+            try:
+                path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                errors.append(f"{path.relative_to(root)} is not UTF-8; preserve it and convert a copy")
+    return errors, warnings
 
 
 def git_repo_root(start: "str | Path | None" = None) -> "Path | None":
@@ -1455,7 +1602,7 @@ def install_merge_driver(root: "Path", dry_run: bool = False) -> list[str]:
     while ``.gitattributes`` (committed) points the ``.kin`` artifacts at it. Repos
     without the driver registered fall back to git's default merge gracefully.
     """
-    actions: list[str] = []
+    actions = install_kin_text_attributes(root, dry_run=dry_run)
     driver_cmd = f"{_find_kin_path()} merge-kin %O %A %B %P"
     for key, value in (
         ("merge.kindex.name", "Kindex .kin artifact structured merge"),

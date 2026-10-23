@@ -612,6 +612,8 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
             slug = _project_slug(project_root)
 
             try:
+                from .setup import require_kin_text_attributes
+                require_kin_text_attributes(config_file)
                 data = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
             except UnicodeDecodeError:
                 from .config import record_degraded
@@ -619,6 +621,12 @@ def scan_kin_files(config: Config, store: Store, verbose: bool = False) -> int:
                     f"Project config {config_file} is not UTF-8; file left unchanged. "
                     "Back it up and convert a copy after confirming its encoding."
                 )
+                record_degraded("scan-kin-files", error, config)
+                if verbose:
+                    print(f"  {error}", file=sys.stderr)
+                continue
+            except ValueError as error:
+                from .config import record_degraded
                 record_degraded("scan-kin-files", error, config)
                 if verbose:
                     print(f"  {error}", file=sys.stderr)
@@ -822,6 +830,8 @@ def _resolve_kin_recursive(
     if not resolved.is_file():
         return
 
+    from .setup import require_kin_text_attributes
+    require_kin_text_attributes(resolved)
     try:
         data = yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
     except UnicodeDecodeError as exc:
@@ -1169,6 +1179,8 @@ def _kin_declared_audience(output_dir: Path) -> str:
     config_file = output_dir / ".kin" / "config"
     try:
         if config_file.is_file():
+            from .setup import require_kin_text_attributes
+            require_kin_text_attributes(config_file)
             data = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
             return str(data.get("audience", "") or "")
     except (OSError, yaml.YAMLError):
@@ -1252,6 +1264,8 @@ def write_kin_index(store: "Store", output_dir: Path) -> Path:
 
     output_path = output_dir / ".kin" / "index.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    from .setup import prepare_kin_text_write
+    prepare_kin_text_write(output_path)
     output_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n",
                            encoding="utf-8", newline="\n")
     return output_path
