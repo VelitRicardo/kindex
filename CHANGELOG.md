@@ -40,15 +40,9 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   generated `.kin/index.json` and `.kin/code-map.json` are not complete database
   backups. Preserve those local files during repair.
 
-  Git can also convert tracked `.kin` files during checkout or `git add` when
-  attributes specify another working-tree encoding or a content filter.
-  `kin index`, `kin export code-map`, `kin repo-memory publish`, and
-  `kin setup-merge` now install UTF-8/LF text rules for tracked `.kin` text.
-  `kin doctor` reports effective attribute overrides and invalid UTF-8 before
-  opening the graph; Kindex refuses affected reads and writes. If Git has
-  already transformed a file, changing `.gitattributes` alone does not repair
-  it: preserve the file and inspect the committed blob before restoring or
-  converting a copy. `kin doctor --fix` does not rewrite affected files.
+  Git attributes can also transform tracked `.kin` text during checkout or
+  `git add`. Kindex now adds UTF-8/LF rules to `.gitattributes` when creating
+  tracked `.kin` text. Commit that file with the artifacts.
 
 ### Added
 - `kindex-remote` serves the graph to agents on other machines over streamable

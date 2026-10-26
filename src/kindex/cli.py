@@ -1441,25 +1441,10 @@ def cmd_extract(args):
 
 def cmd_doctor(args):
     """Comprehensive health check with graph invariants."""
-    from .setup import audit_kin_text_attributes, git_repo_root
-
-    root = git_repo_root(getattr(args, "project_path", None) or Path.cwd())
-    git_issues, git_warnings = audit_kin_text_attributes(root) if root else ([], [])
-    if git_issues:
-        if args.json:
-            print(_dumps({"healthy": False, "issues": git_issues,
-                          "warnings": git_warnings, "stats": {},
-                          "fixes_applied": 0}, indent=2))
-        else:
-            for issue in git_issues:
-                print(f"  ✗ {issue}")
-            print("Preserve affected files and inspect effective Git attributes before repair.")
-        raise SystemExit(2)
-
     store = _store(args)
     stats = store.stats()
     issues = []
-    warnings = list(git_warnings)
+    warnings = []
     fixes_applied = 0
     do_fix = getattr(args, "fix", False)
     task_owner_findings = []
@@ -2024,14 +2009,12 @@ def cmd_export(args):
         if output_path:
             path = Path(output_path)
             path.parent.mkdir(parents=True, exist_ok=True)
-            from .setup import prepare_kin_text_write
-            try:
-                prepare_kin_text_write(path)
-            except ValueError as exc:
-                print(f"Error: {exc}", file=sys.stderr)
-                store.close()
-                raise SystemExit(2) from exc
-            path.write_text(output + "\n", encoding="utf-8", newline="\n")
+            if path.name == "code-map.json" and path.parent.name == ".kin":
+                from .setup import git_repo_root, install_kin_text_attributes
+                root = git_repo_root(path.parent)
+                if root is not None and path.parent.resolve() == (root / ".kin").resolve():
+                    install_kin_text_attributes(root)
+            path.write_text(output + "\n", encoding="utf-8")
             print(f"Wrote {path}", file=sys.stderr)
         else:
             print(output)
@@ -3286,10 +3269,14 @@ def cmd_index(args):
         output_dir = git_repo_root(Path.cwd()) or Path.cwd()
     try:
         path = write_kin_index(store, output_dir)
-    except (RuntimeError, ValueError) as e:
+    except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         store.close()
         sys.exit(1)
+    from .setup import install_kin_text_attributes
+    root = git_repo_root(output_dir)
+    if root is not None and output_dir.resolve() == root.resolve():
+        install_kin_text_attributes(root)
     print(f"Wrote {path}")
     print(f"  ({path.stat().st_size} bytes)")
 
@@ -3322,13 +3309,6 @@ def cmd_merge_kin(args):
     so it can be resolved manually.
     """
     from .kin_merge import merge_kin_files
-    from .setup import require_kin_text_attributes
-
-    try:
-        require_kin_text_attributes(Path(args.path))
-    except ValueError as exc:
-        print(f"merge-kin: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
 
     merged = merge_kin_files(
         getattr(args, "path", "") or "",
@@ -6425,9 +6405,6 @@ def cmd_repo_memory(args):
         else:
             result = import_candidates(store, scope["project_path"])
         print(json.dumps(result, indent=2))
-    except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        raise SystemExit(2) from exc
     finally:
         store.close()
 

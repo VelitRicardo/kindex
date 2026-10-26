@@ -86,8 +86,6 @@ def _validate_record(record):
 
 
 def _load(path):
-    from .setup import require_kin_text_attributes
-    require_kin_text_attributes(path)
     if not path.exists():
         return {"schema": SCHEMA, "records": {}}
     if path.stat().st_size > MAX_BYTES:
@@ -171,8 +169,6 @@ def _publish_locked(store, root, node_ids: list[str]) -> dict:
     if not node_ids:
         raise ValueError("Publish requires explicit shareable node IDs")
     path = _path(root)
-    from .setup import prepare_kin_text_write
-    prepare_kin_text_write(path)
     document = _load(path)
     added = 0
     selected = {}
@@ -213,12 +209,15 @@ def _publish_locked(store, root, node_ids: list[str]) -> dict:
     if len(output.encode()) > MAX_BYTES:
         raise ValueError("Repo evidence exceeds 2 MiB; curate the transport explicitly")
     path.parent.mkdir(exist_ok=True)
-    prepare_kin_text_write(path)
+    from .setup import git_repo_root, install_kin_text_attributes
+    git_root = git_repo_root(path.parent)
+    if git_root is not None and Path(root).resolve() == git_root.resolve():
+        install_kin_text_attributes(git_root)
     # The caller publishes an explicit set. Write only after every item passed.
     import tempfile
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".knowledge-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
             stream.write(output)
             stream.flush()
             os.fsync(stream.fileno())

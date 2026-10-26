@@ -1190,8 +1190,6 @@ def _load_config(
         if not p.exists() and _bound_root is None:
             raise ValueError(f"Kindex config file not found: {config_path}")
         if p.exists():
-            from .setup import require_kin_text_attributes
-            require_kin_text_attributes(p)
             data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
             kin_profile = data.pop("profile", None)
             cfg = _resolve_profile(Config(**data), profile, kin_profile,
@@ -1791,8 +1789,6 @@ def _project_config_paths(project_root: Path) -> list[Path]:
 
 def _load_kin_config_with_inheritance(path: Path) -> dict:
     """Load a .kin config, resolving inherits and merging ancestors."""
-    from .setup import require_kin_text_attributes
-    require_kin_text_attributes(path)
     if path.name != "config" or path.parent.name != ".kin":
         return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
@@ -1808,8 +1804,6 @@ def _resolve_kin_chain(path: Path, remaining: int = 5, seen: set[str] | None = N
         return []
     seen.add(key)
 
-    from .setup import require_kin_text_attributes
-    require_kin_text_attributes(resolved)
     data = yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
     data["_source"] = key
     chain = [data]
