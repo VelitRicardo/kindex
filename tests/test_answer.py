@@ -2499,8 +2499,12 @@ def test_fixed_clock_makes_search_recency_independent_of_the_wall_clock(store, t
     answer_mod.answer_question(store, "What did I kayak on?", _config(tmp_path, fixed_clock=True),
                                as_of="2024/03/15 (Fri) 12:00")
     assert seen and all(kw.get("recency_time").year == 2024 for kw in seen)
+    # Without fixed_clock, an explicit --as-of still dates recency; with no date, it is the wall clock.
     seen.clear()
     answer_mod.answer_question(store, "What did I kayak on?", _config(tmp_path), as_of="2024/03/15 (Fri) 12:00")
+    assert seen and all(kw.get("recency_time").year == 2024 for kw in seen)
+    seen.clear()
+    answer_mod.answer_question(store, "What did I kayak on?", _config(tmp_path))
     assert seen and all("recency_time" not in kw for kw in seen)
 
 
@@ -3309,6 +3313,9 @@ def test_round14_does_not_route_inferences_or_other_count_units(question, intent
 def test_the_benchmark_preset_is_f25_and_the_defaults_are_for_agents():
     from kindex.config import AskConfig
 
+    from kindex.ask_presets import BENCHMARK_ASK
+
+    assert BENCHMARK_ASK == F25_ASK  # pinned to 0.49.0's literal values, key for key
     benchmark = AskConfig(preset="benchmark")
     assert {name: getattr(benchmark, name) for name in F25_ASK} == F25_ASK
     # An option set explicitly wins over the preset.

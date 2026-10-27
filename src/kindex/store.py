@@ -350,6 +350,7 @@ def unconfirmed_digest_directive(node: dict) -> bool:
     return (node.get("prov_activity") == "conversation-digest"
             and not (isinstance(state, dict) and state.get("confirmed") is True))
 
+
 class Store:
     """SQLite-backed knowledge graph with FTS5 full-text search.
 

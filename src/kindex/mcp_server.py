@@ -2105,9 +2105,9 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
 
     Returns the evidence `kin ask` answers from: the matching nodes in full,
     dated and oldest first, with today's date and the standing directives, in
-    graph-local sections whose refs show and edit accept, within `kin ask`'s
-    budget. Counting, listing and ordering questions search deeper and say
-    when the evidence may be incomplete. With answer=True and an LLM configured, it also drafts the
+    graph-local sections whose refs show and edit accept, within about 4,000
+    tokens (8,000 for counts, lists and summaries). Counting, listing and
+    ordering questions search deeper and say when the evidence may be incomplete. With answer=True and an LLM configured, it also drafts the
     answer the way `kin ask` does (planned searches, answering rules), within
     the LLM budget; otherwise it makes no model call.
 
@@ -2115,8 +2115,8 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
         question: Natural language question.
         graph: Read scope: auto, project, or global.
         answer: Also draft an answer with the configured LLM (spends budget).
-        max_tokens: Token budget for the evidence (default: `kin ask`'s, small for
-            a single answer and wide for counts, lists, orderings and advice).
+        max_tokens: Token budget for the evidence (default: about 4,000 tokens,
+            8,000 for counts, lists and summaries; with answer=True, `kin ask`'s budget).
     """
     from .answer import (_INPUT_LIMIT, _USAGE, COMPLETE_TOP_K, COMPLETENESS_INTENTS, _input_left, _prompt_cost,
                          answer_client, answer_prompt, answer_question, answer_system, context_budget,
@@ -2210,7 +2210,9 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
                     # The evidence is sized so the draft fits what the planner left of the cap.
                     system = answer_system(intent if config.ask.rules == "intent" else None, complete,
                                            options=ask_options)
-                    empty = answer_prompt(question, "", intent, as_of=now[:10], readings=config.ask.readings)
+                    empty = answer_prompt(question, "", intent, as_of=now[:10], readings=ask_options.readings,
+                                          details=ask_options.details, count_readings=ask_options.count_readings,
+                                          options=ask_options)
                     budget = max(500, min(budget, _input_left() - _prompt_cost(system, empty) - 300))
                 evidence, omitted = _render_evidence_sources(
                     stores, results, warnings, budget=budget, client=client, evaluation_time=now, question=question)
@@ -2221,8 +2223,9 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
                                if answer else "")
                     return f"{header}{skipped}\n\n{evidence}{coverage}"
                 drafted = draft_answer(llm, answer_config, answer_prompt(
-                    question, evidence, intent, as_of=now[:10], readings=config.ask.readings,
-                    coverage=coverage), ledger, intent, complete)
+                    question, evidence, intent, as_of=now[:10], readings=ask_options.readings,
+                    coverage=coverage, details=ask_options.details,
+                    count_readings=ask_options.count_readings, options=ask_options), ledger, intent, complete)
                 if drafted is None:
                     return f"{header}\n(No answer drafted: the budget ran out.)\n\n{evidence}{coverage}"
                 return f"{drafted}{verify_note}\n\n---\n{header}\n\n{evidence}"

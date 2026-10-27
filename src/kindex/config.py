@@ -409,7 +409,7 @@ class AskConfig(BaseModel):
     dialogue_relation_plan: bool = False  # plan separate entity/attribute and surrounding-episode searches there
     dialogue_context_tokens: int = Field(default=0, ge=0, le=400000)  # single-answer evidence budget there (0: context_tokens)
     large_effort: Literal["", "medium", "high", "xhigh"] = ""  # effort for every answer when the memory has over 1,000 nodes
-    fixed_clock: bool = False       # search recency is measured from the question's date (else the memory's latest conversation), not the wall clock
+    fixed_clock: bool = False       # without --as-of, search recency is measured from the memory's latest conversation, not the wall clock (--as-of always sets it)
     count_inventory: bool = False   # one quoted inventory; count distinct accepted rows locally (samples=1, no verify)
     plan_route: bool = False        # when plan is on, plan single dialogue recalls and inference/advice, not enumeration
     effort_route: bool = False      # effort for dialogue/large graphs; hard_effort (or high) for compact personal logs
@@ -469,7 +469,7 @@ class AskConfig(BaseModel):
     verify_input_tokens: int = Field(default=20000, ge=4000, le=400000)  # total estimated input over all calls
     verify_draft_tokens: int = Field(default=6000, ge=1000, le=400000)  # first reading's evidence budget
     verify_source_tokens: int = Field(default=11000, ge=1000, le=400000)  # source reading, within the total limit
-    max_output_tokens: int = Field(default=4000, ge=256, le=128000)  # includes a reasoning model's reasoning
+    max_output_tokens: int = Field(default=4000, ge=256, le=128000)  # includes a reasoning model's reasoning (gpt-6-luna at medium used at most ~1k on 10k-token asks)
     timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
     seed: int = Field(default=0, ge=0, le=1000)  # numbers the samples drawn, so a rerun can draw fresh ones
     premise_corrections: bool = True  # a question that gets a detail wrong is told what the record says

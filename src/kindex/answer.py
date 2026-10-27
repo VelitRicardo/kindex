@@ -3543,7 +3543,7 @@ def verify_answer(store: Store, question: str, config: Config, client, ledger, a
                                 date_anchors=cfg.date_anchors)
             if verified.chosen:
                 raw = _call(client, config, system=system, user=check_head + "\n\n" + verified.text,
-                            effort=cfg.hard_effort or "high", max_tokens=cfg.max_output_tokens,
+                            effort=cfg.hard_effort or cfg.effort, max_tokens=cfg.max_output_tokens,
                             ledger=ledger, purpose="ask-verify", json_schema=VERIFY_CHECK_SCHEMA)
                 check = _parse_json(raw)
                 # Quotes are checked against the rendered lines the audit read
@@ -3865,7 +3865,9 @@ def answer_question(store: Store, question: str, config: Config, ledger=None, *,
     usage: list[int] = []
     token = _USAGE.set(usage)
     limit_token = _INPUT_LIMIT.set(input_cap(config.ask))
-    clock_token = _CLOCK.set(answer_clock(store, as_of) if config.ask.fixed_clock else None)
+    # An explicit --as-of always dates both the prompt and search recency; fixed_clock
+    # also freezes recency to the archive when no date is given.
+    clock_token = _CLOCK.set(answer_clock(store, as_of) if (config.ask.fixed_clock or as_of) else None)
     scope_token = _SCOPE.set(node_filter)
     try:
         result = _answer(store, question, config, client, ledger, as_of, team, on_text)
@@ -4304,7 +4306,7 @@ def _answer(store: Store, question: str, config: Config, client, ledger, as_of, 
                                                                readings=cfg.readings, details=cfg.details,
                                                                count_readings=cfg.count_readings, options=cfg),
                                  ledger, intent, complete,
-                                 effort=effort if cfg.effort_route else cfg.hard_effort or "high",
+                                 effort=effort if cfg.effort_route else cfg.hard_effort or cfg.effort,
                                  inventory_sources={refs[nid]: line for nid, line in wider.witnesses.items()}
                                  if inventory else None,
                                  ledger_context=wider if (cfg.large_order_ledger or cfg.large_span_ledger) else None,

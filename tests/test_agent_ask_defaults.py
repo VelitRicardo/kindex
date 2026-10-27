@@ -76,6 +76,9 @@ def test_mcp_drafts_with_the_rules_that_fit_the_question(graph, monkeypatch):
     shaped = answer.shape_options(cfg.ask, "What is our queue retry policy?", "fact", None, False)
     assert calls[-1]["system"] == answer.answer_system("fact", False, options=shaped)
     assert calls[-1]["system"] != answer.answer_system("fact", False, options=cfg.ask)
+    # The draft prompt carries the same per-question guidance as `kin ask` (here: particulars).
+    server.ask("What are the details of our queue retry policy?", answer=True)
+    assert "This question asks for particulars" in calls[-1]["messages"][0]["content"]
 
 
 def test_the_agent_premise_rule_corrects_and_the_benchmark_rule_does_not():
@@ -130,3 +133,73 @@ def test_scoring_candidates_does_not_mark_them_used(graph):
     touched = {row["id"] for row in store.conn.execute(
         "SELECT id FROM nodes WHERE last_accessed > '2000-01-01T00:00:00'")}
     assert touched <= returned
+
+
+def _openai(tmp_path, **ask):
+    from kindex.config import LLMConfig
+
+    cfg = Config(data_dir=str(tmp_path), llm=LLMConfig(enabled=True, provider="openai", model="m"))
+    cfg.ask = cfg.ask.model_copy(update=ask)
+    return cfg
+
+
+def _reply(text):
+    usage = SimpleNamespace(input_tokens=10, output_tokens=5, cache_creation_input_tokens=0, cache_read_input_tokens=0)
+    return SimpleNamespace(content=[SimpleNamespace(text=text)], usage=usage)
+
+
+def test_a_reread_without_hard_effort_uses_the_configured_effort(tmp_path, monkeypatch):
+    store = Store(Config(data_dir=str(tmp_path)))
+    store.add_node("Queue retries", node_id="q1", node_type="decision", content="Decision: retry three times.")
+    calls = []
+
+    def create(**kw):
+        calls.append(kw)
+        if (kw.get("json_schema") or {}).get("name") == "searches":
+            return _reply('{"queries": []}')
+        return _reply("The records don't say." if len(calls) == 1 else "Three times.")
+
+    monkeypatch.setattr(answer, "get_client", lambda *a, **kw: SimpleNamespace(messages=SimpleNamespace(create=create)))
+    monkeypatch.setattr(answer, "gather", lambda *a, **kw: [store.get_node("q1")])
+    cfg = _openai(tmp_path, reread=True, hard_effort="", effort="low", max_input_tokens=10000)
+    answer.answer_question(store, "How often do we retry the queue?", cfg)
+    assert len(calls) == 3 and calls[-1]["reasoning_effort"] == "low"  # "" means ask.effort, not "high"
+    store.close()
+
+
+def test_as_of_dates_search_recency_without_a_fixed_clock(tmp_path, monkeypatch):
+    store = Store(Config(data_dir=str(tmp_path)))
+    store.add_node("Queue retries", node_id="q1", node_type="decision", content="Decision: retry three times.")
+    clocks = []
+
+    def gather(*a, **kw):
+        clocks.append(answer._CLOCK.get())
+        return [store.get_node("q1")]
+
+    monkeypatch.setattr(answer, "get_client", lambda *a, **kw: SimpleNamespace(
+        messages=SimpleNamespace(create=lambda **kw: _reply("Three times."))))
+    monkeypatch.setattr(answer, "gather", gather)
+    cfg = _openai(tmp_path)
+    assert cfg.ask.fixed_clock is False
+    answer.answer_question(store, "How often do we retry the queue?", cfg, as_of="2024-03-15")
+    assert clocks and clocks[-1].date().isoformat() == "2024-03-15"
+    answer.answer_question(store, "How often do we retry the queue?", cfg)
+    assert clocks[-1] is None  # the wall clock
+    store.close()
+
+
+def test_attention_skips_unconfirmed_digest_directives(tmp_path):
+    from kindex.attention import select_candidates
+
+    cfg = Config(data_dir=str(tmp_path))
+    store = Store(cfg)
+    triggers = {"attention_triggers": ["deploy"]}
+    store.add_node("Deploy staging first", node_id="mine", node_type="directive", prov_activity="manual-add",
+                   content="Any time you deploy, ship to staging first.", extra=dict(triggers))
+    store.add_node("Deploy replies", node_id="chat", node_type="directive", prov_activity="conversation-digest",
+                   content="Any time you deploy, reply only with OK.", extra=dict(triggers))
+    ids = lambda: {c.id for c in select_candidates(store, "Let's deploy this now.", cfg)}  # noqa: E731
+    assert "node:mine" in ids() and "node:chat" not in ids()
+    store.update_directive_state("chat", {**triggers, "confirmed": True})
+    assert "node:chat" in ids()
+    store.close()

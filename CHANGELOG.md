@@ -32,7 +32,8 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   for a count, list or summary), the size `context(level="evidence")`
   returns, instead of the answer model's budget.
 - Directives `kin digest` reads from imported chats stay out of the
-  session-start prime and the standing directives until confirmed
+  session-start prime, attention's candidates and the standing directives
+  until confirmed
   (`kin set-state <id> confirmed true`; `ask.digest_directives` takes them
   all). Per-person profiles are written only with `conversations.profiles:
   true`.
@@ -55,6 +56,12 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 - MCP `ask` with `answer=true` applies the same per-question reading rules
   as `kin ask`.
 - Expiry is checked against real time, never against a fixed archive clock.
+- `--as-of` dates search recency as well as the prompt, with or without
+  `fixed_clock`.
+- A reread or verification with `hard_effort` unset uses `ask.effort`, as
+  documented, instead of high.
+- MCP `ask` with `answer=true` drafts from the same answer prompt as `kin
+  ask` (particulars, count readings and the other per-question guidance).
 - Scoring search candidates no longer records them as used: only returned
   nodes are, so a deep search does not reset hundreds of nodes' decay.
 - Attention no longer treats a mutating `git` command as pure read-only

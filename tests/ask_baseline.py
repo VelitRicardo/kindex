@@ -6,10 +6,71 @@ where every F25 option is off, and turn on what they test, so each option's own
 effect stays isolated.
 """
 
-from kindex.ask_presets import BENCHMARK_ASK
-
-# The benchmarked `ask:` configuration (F25), as measured.
-F25_ASK = dict(BENCHMARK_ASK)
+# The benchmarked `ask:` configuration (F25): 0.49.0's defaults, written out so that
+# `ask.preset: benchmark` (ask_presets.BENCHMARK_ASK) is pinned to them, not to itself.
+F25_ASK = {
+    'hard_effort': 'high',
+    'dialogue_effort': 'xhigh',
+    'dialogue_plan': True,
+    'reread': True,
+    'max_input_tokens': 20000,
+    'details': True,
+    'recall_only': True,
+    'timeline_facets': True,
+    'episode_scope': True,
+    'dialogue_focus': True,
+    'inference_candidates': True,
+    'date_anchors': True,
+    'count_scope': True,
+    'count_readings': True,
+    'predicate_counts': True,
+    'quantity_readings': True,
+    'window_readings': True,
+    'relative_focus': True,
+    'event_reference': True,
+    'subject_scope': True,
+    'approximate_state': True,
+    'exchange_context': True,
+    'window_search': True,
+    'fact_tiers': 40,
+    'dialogue_context_tokens': 14000,
+    'list_position': True,
+    'component_updates': True,
+    'remainder_quantities': True,
+    'recall_candidates': True,
+    'archival_time': True,
+    'disposition_inference': True,
+    'large_effort': 'xhigh',
+    'large_landmarks': True,
+    'large_recall_exchange': True,
+    'large_response_contract': True,
+    'ordering_witnesses': True,
+    'dialogue_fields': True,
+    'episode_endpoints': True,
+    'fixed_clock': True,
+    'large_span_witnesses': True,
+    'large_claim_witnesses': True,
+    'large_summary_coverage': True,
+    'witness_coverage': True,
+    'count_witnesses': True,
+    'coarse_ordering': True,
+    'ordering_occurrences': True,
+    'large_evidence_pack': True,
+    'large_evidence_pack_intents': 'aggregation,assistant_recall',
+    'archive_clock': True,
+    'dialogue_episode_bindings': True,
+    'dialogue_instance_identity': True,
+    'count_example_membership': True,
+    'large_claim_scan': True,
+    'large_summary_methods': True,
+    # Defaults this change moved for agents, at their 0.49.0 values.
+    'wide_context_tokens': 16000,
+    'max_output_tokens': 16000,
+    'timeout_seconds': 600.0,
+    # Options added with the presets, at the behaviour 0.49.0 had.
+    'premise_corrections': False,
+    'digest_directives': True,
+}
 
 # The F25 options at their previous (off) values.
 PRE_F25_ASK = {
