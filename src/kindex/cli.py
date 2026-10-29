@@ -2009,7 +2009,7 @@ def cmd_export(args):
         if output_path:
             path = Path(output_path)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(output + "\n")
+            path.write_text(output + "\n", encoding="utf-8", newline="\n")
             print(f"Wrote {path}", file=sys.stderr)
         else:
             print(output)
