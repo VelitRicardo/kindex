@@ -2014,7 +2014,7 @@ def cmd_export(args):
                 root = git_repo_root(path.parent)
                 if root is not None and path.parent.resolve() == (root / ".kin").resolve():
                     install_kin_text_attributes(root)
-            path.write_text(output + "\n", encoding="utf-8")
+            path.write_text(output + "\n", encoding="utf-8", newline="\n")
             print(f"Wrote {path}", file=sys.stderr)
         else:
             print(output)
