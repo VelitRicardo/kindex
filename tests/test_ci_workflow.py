@@ -34,7 +34,7 @@ def test_pr_and_release_share_the_full_test_job():
         # Byte-compile on the requires-python floor before the 3.12 suite.
         "python -m compileall -q src/kindex",
         "sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux universal-ctags",
-        'pip install -e ".[dev,mcp]"', "pytest -n auto --dist loadfile --timeout 300",
+        'pip install -e ".[dev,mcp,vectors]"', "pytest -n auto --dist loadfile --timeout 300",
     ]
     assert all("continue-on-error" not in step and "if" not in step
                for step in test["steps"])
