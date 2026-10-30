@@ -26,8 +26,14 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from . import platform_io
-from .platform_io import open_nofollow
+if __package__:
+    from . import platform_io
+else:
+    # The review worker runs this file as a script (_run_provider), where a
+    # relative import fails; import the same installed source by package.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from kindex import platform_io
+open_nofollow = platform_io.open_nofollow
 
 _MAX_OUTPUT = 1024 * 1024
 _EXECUTABLES = {"codex": "codex", "claude": "claude", "antigravity": "agy"}
