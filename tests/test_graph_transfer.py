@@ -443,11 +443,20 @@ def test_conflicting_duplicate_arcs_in_one_file_are_rejected(tmp_path, mode):
 
 
 def test_installed_console_script_transfers_and_reopens_for_recall(tmp_path):
-    executable = Path(sys.executable).with_name("kin")
-    assert executable.is_file(), "Install the package before running its console E2E test"
+    # Launch the installed `kin` entry point under this interpreter. A `kin` found
+    # beside the interpreter or on PATH can belong to another installation.
+    from importlib.metadata import distribution
+
+    entry_points = [ep for ep in distribution("kindex").entry_points
+                    if ep.group == "console_scripts" and ep.name == "kin"]
+    assert entry_points, "Install the package before running its console E2E test"
+    module, _, attr = entry_points[0].value.partition(":")
+    # The same shim pip generates for the console script.
+    launcher = f"import sys; from {module} import {attr}; sys.argv[0] = 'kin'; sys.exit({attr}())"
 
     def run(data_dir, *args):
-        return subprocess.run([str(executable), *args, "--data-dir", str(data_dir), "--config", "/dev/null"],
+        return subprocess.run([sys.executable, "-c", launcher, *args, "--data-dir", str(data_dir),
+                               "--config", "/dev/null"],
                               capture_output=True, text=True, timeout=30)
 
     transfer = tmp_path / "input.json"
