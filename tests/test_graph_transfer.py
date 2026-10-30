@@ -450,10 +450,9 @@ def test_installed_console_script_transfers_and_reopens_for_recall(tmp_path):
     entry_points = [ep for ep in distribution("kindex").entry_points
                     if ep.group == "console_scripts" and ep.name == "kin"]
     assert entry_points, "Install the package before running its console E2E test"
-    launcher = ("import sys; from importlib.metadata import distribution; "
-                "ep = next(e for e in distribution('kindex').entry_points "
-                "if e.group == 'console_scripts' and e.name == 'kin'); "
-                "sys.argv[0] = 'kin'; sys.exit(ep.load()())")
+    module, _, attr = entry_points[0].value.partition(":")
+    # The same shim pip generates for the console script.
+    launcher = f"import sys; from {module} import {attr}; sys.argv[0] = 'kin'; sys.exit({attr}())"
 
     def run(data_dir, *args):
         return subprocess.run([sys.executable, "-c", launcher, *args, "--data-dir", str(data_dir),

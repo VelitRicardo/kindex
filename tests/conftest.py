@@ -53,7 +53,11 @@ def hermetic_user_config(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
-    for var in ("KIN_PROFILE", "KIN_PROJECT", "KIN_PROJECT_PATH", "KIN_AGENT_ID"):
+    # Ambient selection and routing from the developer's shell or host session.
+    # KIN_HEALTH_DIR would also bypass the supervisor-health settings gate.
+    for var in ("KIN_PROFILE", "KIN_PROJECT", "KIN_PROJECT_PATH", "KIN_AGENT_ID",
+                "KIN_CLIENT", "KIN_SESSION_ID", "KIN_HEALTH_DIR", "KIN_LINEAR_ID",
+                "KIN_SIGNET_EXECUTABLE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(config, "_GLOBAL_PATHS", [
         home / ".config" / "kindex" / "kin.yaml",
