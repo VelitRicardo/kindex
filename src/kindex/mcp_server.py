@@ -18,6 +18,9 @@ import sqlite3
 import sys
 from pathlib import Path
 from typing import Annotated, Any, Literal
+
+from pydantic import Field as _QueryField
+
 from .privacy import redact, redact_serialized, safe_error, redacting_print as print
 
 #: How long a reduced Kinbase sync may run inside one MCP tool call.
@@ -1608,7 +1611,8 @@ def _render_evidence_sources(stores, results, warnings, *, budget: int, client: 
 
         # Directives obey the same client scope and trust admission as hits.
         directives = _trusted_context_nodes(
-            stores[graph], _scope_results(standing_directives(stores[graph]), client),
+            stores[graph], _scope_results(standing_directives(
+                stores[graph], digest=_get_config().ask.digest_directives), client),
             trusted_only=trusted_only, evaluation_time=evaluation_time)
         profiles = (question_profiles(stores[graph], question)
                     if question and not trusted_only and _get_config().ask.profiles else None)
@@ -2192,9 +2196,9 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
 
     Returns the evidence `kin ask` answers from: the matching nodes in full,
     dated and oldest first, with today's date and the standing directives, in
-    graph-local sections whose refs show and edit accept, within `kin ask`'s
-    budget. Counting, listing and ordering questions search deeper and say
-    when the evidence may be incomplete. With answer=True and an LLM configured, it also drafts the
+    graph-local sections whose refs show and edit accept, within about 4,000
+    tokens (8,000 for counts, lists and summaries). Counting, listing and
+    ordering questions search deeper and say when the evidence may be incomplete. With answer=True and an LLM configured, it also drafts the
     answer the way `kin ask` does (planned searches, answering rules), within
     the LLM budget; otherwise it makes no model call.
 
@@ -2202,13 +2206,14 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
         question: Natural language question.
         graph: Read scope: auto, project, or global.
         answer: Also draft an answer with the configured LLM (spends budget).
-        max_tokens: Token budget for the evidence (default: `kin ask`'s, small for
-            a single answer and wide for counts, lists, orderings and advice).
+        max_tokens: Token budget for the evidence (default: about 4,000 tokens,
+            8,000 for counts, lists and summaries; with answer=True, `kin ask`'s budget).
     """
     from .answer import (_INPUT_LIMIT, _USAGE, COMPLETE_TOP_K, COMPLETENESS_INTENTS, _input_left, _prompt_cost,
                          answer_client, answer_prompt, answer_question, answer_system, context_budget,
-                         coverage_note, date_window, draft_answer, favour, fuse, has_facts, input_cap,
-                         memory_scale, needs_breadth, plan_question)
+                         coverage_note, date_window, draft_answer, favour, fuse, input_cap,
+                         memory_scale, named_dialogue, needs_breadth, plan_question, shape_options,
+                         undigested)
 
     q_lower = question.lower()
     if any(p in q_lower for p in ["how do i", "how to", "steps to", "guide to"]):
@@ -2277,14 +2282,28 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
                                  summaries_first=intent == "summary")
                 if not results:
                     return f"[{qtype}] No relevant knowledge found for: {question}"
-                budget = max_tokens if max_tokens > 0 else context_budget(
-                    config.ask, needs_breadth(question, intent, complete), has_facts(results), summary=intent == "summary",
-                    scale=max(memory_scale(store) for store in stores.values()))
+                breadth = needs_breadth(question, intent, complete)
+                if max_tokens > 0:
+                    budget = max_tokens
+                elif llm is None:
+                    # Evidence for the calling agent's own context: what context(level=evidence)
+                    # returns, twice that for a count, list or summary.
+                    budget = MCP_EVIDENCE_TOKENS * (2 if breadth or intent == "summary" else 1)
+                else:
+                    budget = context_budget(
+                        config.ask, breadth, not undigested(results), summary=intent == "summary",
+                        scale=max(memory_scale(store) for store in stores.values()))
+                # The reading rules that fit this question and evidence, as `kin ask` applies them.
+                ask_options = shape_options(config.ask, question, intent, None, named_dialogue(results))
+                answer_config = (config if ask_options is config.ask
+                                 else config.model_copy(update={"ask": ask_options}))
                 if llm is not None and _INPUT_LIMIT.get():
                     # The evidence is sized so the draft fits what the planner left of the cap.
                     system = answer_system(intent if config.ask.rules == "intent" else None, complete,
-                                           options=config.ask)
-                    empty = answer_prompt(question, "", intent, as_of=now[:10], readings=config.ask.readings)
+                                           options=ask_options)
+                    empty = answer_prompt(question, "", intent, as_of=now[:10], readings=ask_options.readings,
+                                          details=ask_options.details, count_readings=ask_options.count_readings,
+                                          options=ask_options)
                     budget = max(500, min(budget, _input_left() - _prompt_cost(system, empty) - 300))
                 evidence, omitted = _render_evidence_sources(
                     stores, results, warnings, budget=budget, client=client, evaluation_time=now, question=question)
@@ -2294,9 +2313,10 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
                     skipped = ("\n(No answer drafted: no LLM is configured or the budget is spent.)"
                                if answer else "")
                     return f"{header}{skipped}\n\n{evidence}{coverage}"
-                drafted = draft_answer(llm, config, answer_prompt(
-                    question, evidence, intent, as_of=now[:10], readings=config.ask.readings,
-                    coverage=coverage), ledger, intent, complete)
+                drafted = draft_answer(llm, answer_config, answer_prompt(
+                    question, evidence, intent, as_of=now[:10], readings=ask_options.readings,
+                    coverage=coverage, details=ask_options.details,
+                    count_readings=ask_options.count_readings, options=ask_options), ledger, intent, complete)
                 if drafted is None:
                     return f"{header}\n(No answer drafted: the budget ran out.)\n\n{evidence}{coverage}"
                 return f"{drafted}{verify_note}\n\n---\n{header}\n\n{evidence}"
@@ -3366,9 +3386,6 @@ def _readonly_query_tool(fn):
 
 # The Field constraints are reflected in this tool's advertised schema as well
 # as the shared strict semantic request model. This does not alter old tools.
-from pydantic import Field as _QueryField
-
-
 @_readonly_query_tool
 def query_context(
     query: Annotated[str, _QueryField(min_length=1)],

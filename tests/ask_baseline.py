@@ -1,11 +1,13 @@
 """`kin ask` option sets shared by the answer tests.
 
-F25 is the default configuration. Tests of one reading rule start from the
-pre-F25 baseline, where every F25 option is off, and turn on what they test,
-so each option's own effect stays isolated.
+F25 is the benchmarked configuration (`ask.preset: benchmark`); the defaults
+are for agents. Tests of one reading rule start from the pre-F25 baseline,
+where every F25 option is off, and turn on what they test, so each option's own
+effect stays isolated.
 """
 
-# The default `ask:` configuration (F25), as measured.
+# The benchmarked `ask:` configuration (F25): 0.49.0's defaults, written out so that
+# `ask.preset: benchmark` (ask_presets.BENCHMARK_ASK) is pinned to them, not to itself.
 F25_ASK = {
     'hard_effort': 'high',
     'dialogue_effort': 'xhigh',
@@ -61,6 +63,13 @@ F25_ASK = {
     'count_example_membership': True,
     'large_claim_scan': True,
     'large_summary_methods': True,
+    # Defaults this change moved for agents, at their 0.49.0 values.
+    'wide_context_tokens': 16000,
+    'max_output_tokens': 16000,
+    'timeout_seconds': 600.0,
+    # Options added with the presets, at the behaviour 0.49.0 had.
+    'premise_corrections': False,
+    'digest_directives': True,
 }
 
 # The F25 options at their previous (off) values.
@@ -119,4 +128,10 @@ PRE_F25_ASK = {
     'count_example_membership': False,
     'large_claim_scan': False,
     'large_summary_methods': False,
+    # Defaults the agent preset changed, at the values these tests were written against.
+    'wide_context_tokens': 16000,
+    'max_output_tokens': 16000,
+    'timeout_seconds': 600.0,
+    'premise_corrections': False,
+    'digest_directives': True,
 }
