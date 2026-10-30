@@ -49,7 +49,7 @@ def hermetic_user_config(tmp_path, monkeypatch):
     """
     from kindex import config
 
-    home = tmp_path / "home"
+    home = tmp_path / "hermetic-home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
