@@ -763,7 +763,7 @@ def select_candidates(
 
     from .reminders import reminder_matches_conversation
     from .scoping import item_matches_conversation
-    from .store import node_expired
+    from .store import node_expired, unconfirmed_digest_directive
 
     by_id: dict[str, AttentionCandidate] = {}
     include_legacy_scoped_items = conversation_id is None
@@ -771,7 +771,7 @@ def select_candidates(
     for node in store.fts_search(snippet, limit=max(12, config.attention.max_candidates * 3)):
         if node.get("type") not in {"constraint", "directive", "checkpoint", "watch", "task"}:
             continue
-        if node_expired(node):
+        if node_expired(node) or unconfirmed_digest_directive(node):
             continue
         if adapter_scoped_out(node.get("tags"), adapter):
             continue
@@ -788,7 +788,7 @@ def select_candidates(
 
     for node_type in ("constraint", "directive", "checkpoint", "task"):
         for node in store.all_nodes(node_type=node_type, status="active", limit=100):
-            if node_expired(node):
+            if node_expired(node) or unconfirmed_digest_directive(node):
                 continue
             if adapter_scoped_out(node.get("tags"), adapter):
                 continue
