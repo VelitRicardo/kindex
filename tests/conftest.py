@@ -39,6 +39,30 @@ def hermetic_state_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def hermetic_user_config(tmp_path, monkeypatch):
+    """Hide the developer's own Kindex configuration and profile selection.
+
+    The user-level config paths are computed from HOME at import time, so a
+    real ``~/.config/kindex/kin.yaml`` (profiles, default_profile, data_dir)
+    otherwise leaks into every load_config() call and every CLI subprocess.
+    Tests that need a user config write one under this temporary HOME.
+    """
+    from kindex import config
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    for var in ("KIN_PROFILE", "KIN_PROJECT", "KIN_PROJECT_PATH", "KIN_AGENT_ID"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(config, "_GLOBAL_PATHS", [
+        home / ".config" / "kindex" / "kin.yaml",
+        home / ".config" / "conv" / "conv.yaml",
+    ])
+    return home
+
+
+@pytest.fixture(autouse=True)
 def hermetic_scheduler(tmp_path, monkeypatch):
     """Keep tests away from the machine's real scheduler.
 
