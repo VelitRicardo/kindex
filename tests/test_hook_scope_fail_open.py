@@ -297,3 +297,42 @@ def test_windows_cap_folds_in_appends_that_recreated_the_ledger(tmp_path, monkey
     config._cap_degraded_ledger_windows(ledger)
     assert ledger.read_bytes() == _numbered(3, 4, 5, 6)
     assert sorted(path.name for path in tmp_path.iterdir()) == ["degraded.jsonl"]
+
+
+@pytest.mark.parametrize("fail_at", ["fchmod", "write"])
+def test_windows_cap_that_fails_after_the_move_aside_restores_the_ledger(tmp_path, monkeypatch, fail_at):
+    import kindex.config as config
+    monkeypatch.setattr(config, "_DEGRADED_KEEP_LINES", 3)
+    ledger = tmp_path / "degraded.jsonl"
+    ledger.write_bytes(_numbered(4, 5))
+    (tmp_path / "degraded.jsonl.capping").write_bytes(_numbered(1, 2, 3))
+
+    real_write_all, writes = config._write_all, []
+
+    def boom(*args):
+        raise OSError(28, "No space left on device")
+
+    def first_write_fails(fd, data):  # the trimmed copy; the restore still writes
+        writes.append(data)
+        if len(writes) == 1:
+            boom()
+        real_write_all(fd, data)
+    if fail_at == "fchmod":
+        monkeypatch.setattr(config.os, "fchmod", boom, raising=False)
+    else:
+        monkeypatch.setattr(config, "_write_all", first_write_fails)
+    with pytest.raises(OSError):
+        config._cap_degraded_ledger_windows(ledger)
+    assert ledger.read_bytes() == _numbered(1, 2, 3, 4, 5)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["degraded.jsonl"]
+
+
+def test_windows_cap_runs_without_fchmod(tmp_path, monkeypatch):
+    import kindex.config as config
+    monkeypatch.setattr(config, "_DEGRADED_KEEP_LINES", 3)
+    monkeypatch.delattr(config.os, "fchmod", raising=False)
+    ledger = tmp_path / "degraded.jsonl"
+    ledger.write_bytes(_numbered(1, 2, 3, 4, 5))
+    config._cap_degraded_ledger_windows(ledger)
+    assert ledger.read_bytes() == _numbered(3, 4, 5)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["degraded.jsonl"]

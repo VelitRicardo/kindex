@@ -1583,22 +1583,29 @@ def _cap_degraded_ledger_windows(path: Path) -> None:
         os.replace(path, aside)
     except OSError:
         return  # an appender has it open: decline, the file grows for now
-    held += aside.read_bytes()
-    lines = held.splitlines(keepends=True)
-    if lines and not lines[-1].endswith(b"\n"):
-        lines[-1] += b"\n"
-    content = b"".join(lines[-_DEGRADED_KEEP_LINES:])
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
-    tmp = Path(tmp_name)
+    # Until the trimmed ledger is in place, `unplaced` holds every entry read
+    # so far and `aside_read` says whether it includes the aside file's own.
+    unplaced, aside_read, placed = held, False, False
+    tmp = None
     try:
+        held += aside.read_bytes()
+        unplaced, aside_read = held, True
+        lines = held.splitlines(keepends=True)
+        if lines and not lines[-1].endswith(b"\n"):
+            lines[-1] += b"\n"
+        content = b"".join(lines[-_DEGRADED_KEEP_LINES:])
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+        tmp = Path(tmp_name)
         try:
-            os.fchmod(fd, 0o600)
+            if hasattr(os, "fchmod"):  # Windows has no fchmod before Python 3.13
+                os.fchmod(fd, 0o600)
             _write_all(fd, content)
         finally:
             os.close(fd)
         for _ in range(3):
             try:
                 os.rename(tmp, path)  # never replaces on Windows
+                placed = True
                 break
             except FileExistsError:
                 pass
@@ -1606,7 +1613,9 @@ def _cap_degraded_ledger_windows(path: Path) -> None:
                 os.replace(path, aside)  # fresh appends: fold them in after
             except OSError:
                 continue
+            aside_read = False
             fresh = aside.read_bytes()
+            unplaced, aside_read = unplaced + fresh, True
             content += fresh
             fd = os.open(str(tmp), os.O_WRONLY | os.O_APPEND | binary)
             try:
@@ -1619,9 +1628,33 @@ def _cap_degraded_ledger_windows(path: Path) -> None:
                 _write_all(fd, content)
             finally:
                 os.close(fd)
+            placed = True
         aside.unlink(missing_ok=True)
+    except BaseException:
+        if not placed:
+            # Readers only see the ledger: put back what was moved aside.
+            _restore_moved_aside(path, aside, unplaced, aside_read, binary)
+        raise
     finally:
-        tmp.unlink(missing_ok=True)
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+
+
+def _restore_moved_aside(path: Path, aside: Path, unplaced: bytes, aside_read: bool,
+                         binary: int) -> None:
+    """Append entries a failed Windows cap moved aside back onto the ledger."""
+    try:
+        if not aside_read and aside.exists():
+            unplaced += aside.read_bytes()
+        if unplaced:
+            fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT | binary, 0o600)
+            try:
+                _write_all(fd, unplaced)
+            finally:
+                os.close(fd)
+        aside.unlink(missing_ok=True)
+    except OSError:
+        pass  # the aside file stays; the next cap reads it first
 
 
 def _try_cap_degraded_ledger(path: Path) -> None:
