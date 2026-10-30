@@ -4,6 +4,8 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-10-30
+
 ### Changed
 - `kin ask` and MCP `ask` defaults are for agents asking about their own
   graph again. 0.49.0 made the configuration measured on LoCoMo,
