@@ -52,6 +52,7 @@ from .schema import (
     SESSION_PAUSE_REASON_DUPLICATE_MIGRATION,
     SUGGESTION_IDENTITY_KINDS,
     edit_class_for,
+    validate_storage_node_type,
 )
 
 logger = protect_logger(logging.getLogger(__name__))
@@ -2003,6 +2004,7 @@ class Store:
         when a binding is supplied, and ``true_of`` defaults to ``asserted_at``.
         The store performs no file IO — digests are computed by callers.
         """
+        validate_storage_node_type(node_type)
         if standing not in STANDINGS:
             raise ValueError(f"Unknown standing: {standing!r}")
         # Merge user-supplied tags into domains (supplement, never replace)
@@ -2129,6 +2131,20 @@ class Store:
             return None
         row = self.conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
         return None if row is None else self._row_to_dict(row)
+
+    def peek_nodes(self, node_ids: list[str]) -> dict[str, dict]:
+        """Batch ID hydration with peek_node semantics and no access writes."""
+        ids = list(dict.fromkeys(node_id for node_id in node_ids if node_id))
+        nodes: dict[str, dict] = {}
+        # Stay below SQLite's variable limit even on older supported builds.
+        for first in range(0, len(ids), 500):
+            page = ids[first:first + 500]
+            placeholders = ",".join("?" for _ in page)
+            for row in self.conn.execute(
+                f"SELECT * FROM nodes WHERE id IN ({placeholders})", page
+            ):
+                nodes[row["id"]] = self._row_to_dict(row)
+        return nodes
 
     def get_node_domains(self, node_id: str) -> list[str]:
         """Read a node's domains/tags without touching last_accessed (non-mutating).
@@ -2524,6 +2540,7 @@ class Store:
         if node is None:
             raise KeyError(f"No node with id '{node_id}'")
         node_type = node.get("type", "concept")
+        validate_storage_node_type(node_type)
         cls = edit_class_for(node_type, policy_overrides)
         if cls == "managed":
             raise EditPolicyError(
@@ -2557,10 +2574,11 @@ class Store:
             # must see the first's status flip and abort instead of
             # creating a competing successor.
             row = conn.execute(
-                "SELECT status, extra FROM nodes WHERE id = ?", (node_id,)
+                "SELECT type, status, extra FROM nodes WHERE id = ?", (node_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(f"No node with id '{node_id}'")
+            validate_storage_node_type(row["type"])
             try:
                 cur_extra = json.loads(row["extra"] or "{}")
             except (json.JSONDecodeError, TypeError):
@@ -3292,6 +3310,7 @@ class Store:
                 raise CandidateStateError(f"Candidate is already terminal: {status}")
             if parse_rfc3339(candidate["expires_at"], field="expires_at") <= evaluation_time:
                 raise CandidateStateError("Candidate is expired")
+            validate_storage_node_type(candidate.get("node_type"))
 
             current_token = self._candidate_review_token_locked(conn, row)
             if not hmac.compare_digest(review_token.strip(), current_token):

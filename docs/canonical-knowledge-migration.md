@@ -54,6 +54,23 @@ no instruction to perform an automatic full migration after every capture.
 
 ## Current recovery limits
 
+- Storage writes accept the documented node types plus the dedicated internal
+  `coordination` and `conversation` types. Add/upsert, graph import (including
+  dry runs), archive restore and derived node copies reject malformed or unknown
+  types before committing. This does not repair or normalize existing rows;
+  invalid archived evidence remains archived when restore refuses it. Public
+  generic-add and capture type restrictions are unchanged.
+- Archiving refuses any existing node or edge ID in any archive file, including
+  an apparently identical retry after a crash between archive and source commits.
+  Legacy summaries cannot establish full evidence equivalence, so automatic
+  collision reconciliation is unsupported. Both copies remain for explicit
+  review, the failure is reported, and the batch continues with other nodes.
+  An unreadable archive also refuses the move. Restore refuses conflicting fast
+  graph nodes or edges before removing archived evidence. Legacy edge restores
+  retain their archived IDs; an ID collision or unverifiable whole-row identity
+  refuses the restore rather than silently assigning a new edge ID. Archive files
+  still require exclusive operational ownership during rotation or manual changes;
+  this is not a transaction spanning every archive file and the fast database.
 - `.kin/index.json` contains selected summaries, not complete node content or
   provenance. It cannot reconstruct the complete database.
 - `repo-memory` transports selected shareable types and fields into quarantine.

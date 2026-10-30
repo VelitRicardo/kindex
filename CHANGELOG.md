@@ -90,6 +90,15 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   capture, dreaming scheduler, provider call or human beta is activated. Packing
   can reduce serialized bytes; the fresh comparison found no recall improvement,
   and organizer effectiveness remains unproven.
+- Optional adaptive Sim cadence (`sim.adaptive.enabled`): bounded intervals,
+  quiet-result backoff, provider failure cooldowns, and finite scoped controls.
+  `kin sim attention|backoff --duration-seconds N` requires `--conversation-id ID`
+  or explicit `--store`; `clear-control` removes that override. Matching local
+  MCP controls use the selected graph. Attention never overrides enablement,
+  privacy, or budget gates. Advice expires and tracks generated, emitted, and
+  explicitly acknowledged states; `kin sim ack --conversation-id ID --review-id ID`
+  acknowledges an emitted receipt. `control-status` shows sanitized state.
+
 - `kindex-remote` serves the graph to agents on other machines over streamable
   HTTP behind Cloudflare Access (extra `kindex[remote]`). It binds loopback
   only, verifies the Access JWT on every request, refuses a foreign Host
@@ -146,6 +155,15 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 - Attention also treats `git reflog drop` and `git reflog write` as actions,
   while `git config --get-color` and `--get-colorbool` remain read-only even
   when given an optional second argument.
+- Embedding replacement validates complete vectors and publishes atomically;
+  failed jobs rotate behind untouched jobs. Vector search refills candidates up
+  to SQLite's 4,096-candidate limit and batches node hydration without access writes.
+- Cron isolates store failures and maintains registered project queues using
+  trusted execution settings and bounded passes. Busy hooks skip within a short
+  lock deadline and record degraded health instead of waiting for a worker.
+- Storage rejects invalid node types before insertion, import, restore or derived
+  copies. Archive collisions preserve both copies for explicit review, including
+  legacy edge restore conflicts. Existing malformed data is not rewritten.
 
 ## [0.49.0] - 2026-10-14
 

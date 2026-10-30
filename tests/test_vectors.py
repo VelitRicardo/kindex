@@ -287,7 +287,7 @@ class TestEmbedTextDispatch:
         assert [r["index"] for r in records] == [0, 1, 2]
 
     def test_upsert_embedding_stores_chunk_metadata(self, tmp_path, monkeypatch):
-        store = Store(Config(data_dir=str(tmp_path)))
+        store = Store(Config(data_dir=str(tmp_path), embedding={"dimensions": 2}))
         try:
             store.conn.execute(
                 "CREATE TABLE node_vectors (node_id TEXT PRIMARY KEY, embedding BLOB)"

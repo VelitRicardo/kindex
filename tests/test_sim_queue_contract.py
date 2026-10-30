@@ -30,6 +30,7 @@ request = json.loads(sys.argv[1])
 root = Path(request['root'])
 cfg = Config(data_dir=str(root / 'store'))
 cfg.sim.enabled = True
+cfg.llm.enabled = True  # API work is explicitly enabled; transport remains fake.
 cfg.sim.tick_interval = 1
 cfg.sim.triage_banter = False
 cfg.sim.drain_on_tick = True

@@ -12,6 +12,7 @@ from unittest import mock
 
 from .native_fixture import make_store
 from kindex import retrieve
+from kindex.schema import STORAGE_NODE_TYPES
 
 
 ORIGINAL_SEARCH = retrieve.hybrid_search
@@ -77,11 +78,16 @@ class NativeFixture(unittest.TestCase):
                    valid_at=None, invalid_at=None, extra=None, verified=True):
         metadata = {"project_path": project or self.project}
         metadata.update(extra or {})
-        self.store.add_node(key, body, node_id=key, node_type=node_type, domains=domains or [],
-                            extra=metadata, queue_embedding=False)
+        # Storage refuses new rows of retired types; such rows only exist as legacy data.
+        legacy = node_type not in STORAGE_NODE_TYPES
+        self.store.add_node(key, body, node_id=key, node_type="concept" if legacy else node_type,
+                            domains=domains or [], extra=metadata, queue_embedding=False)
         if verified:
             self.store.verify_node(key, verified_by="independent-v7-fixture", prov_method="synthetic-test",
                 verified_at="2026-10-01T00:00:00Z", valid_at=valid_at, invalid_at=invalid_at)
+        if legacy:
+            self.store.conn.execute("UPDATE nodes SET type = ? WHERE id = ?", (node_type, key))
+            self.store.conn.commit()
         return key
 
     def hits(self, *keys):

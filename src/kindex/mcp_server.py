@@ -3217,6 +3217,67 @@ def orient(graph: str = "auto") -> str:
         return f"Error: {exc}"
 
 
+# ── Sim controls (selected store only) ────────────────────────────────
+
+
+def _sim_scope(conversation_id, store_scope):
+    from .adaptive_sim import _scope
+    _scope(conversation_id)
+    if type(store_scope) is not bool or (conversation_id is not None) == store_scope:
+        raise ValueError("explicit_store_or_conversation_required")
+
+
+@_tool()
+def sim_control_status(conversation_id: str | None = None) -> dict:
+    """Read safe adaptive controls and advice receipts in the selected store."""
+    from .adaptive_sim import control_status, _scope
+    _scope(conversation_id)
+    store, config = _get_store()
+    return control_status(store, config, conversation_id=conversation_id)
+
+
+def _sim_override(mode, duration_seconds, conversation_id, store_scope):
+    from .adaptive_sim import set_override
+    _sim_scope(conversation_id, store_scope)
+    if type(duration_seconds) is not int or duration_seconds < 1:
+        raise ValueError("invalid_duration_seconds")
+    store, config = _get_store()
+    return set_override(store, config, mode=mode, duration_seconds=duration_seconds,
+                        conversation_id=conversation_id)
+
+
+@_tool()
+def sim_attention(duration_seconds: int, conversation_id: str | None = None, store_scope: bool = False) -> dict:
+    """Temporarily shorten cadence within the existing safety and spend gates."""
+    return _sim_override("attention", duration_seconds, conversation_id, store_scope)
+
+
+@_tool()
+def sim_backoff(duration_seconds: int, conversation_id: str | None = None, store_scope: bool = False) -> dict:
+    """Pause new provider reviews in an explicitly selected scope."""
+    return _sim_override("backoff", duration_seconds, conversation_id, store_scope)
+
+
+@_tool()
+def sim_clear_control(conversation_id: str | None = None, store_scope: bool = False) -> dict:
+    """Clear a finite override in an explicitly selected scope."""
+    from .adaptive_sim import clear_override
+    _sim_scope(conversation_id, store_scope)
+    store, _ = _get_store()
+    return clear_override(store, conversation_id=conversation_id)
+
+
+@_tool()
+def sim_ack(conversation_id: str, review_id: str) -> dict:
+    """Confirm receipt of one exact unexpired emitted advice item."""
+    from .adaptive_sim import acknowledge_advice, _scope
+    _scope(conversation_id)
+    if conversation_id is None or not isinstance(review_id, str) or not review_id.strip():
+        raise ValueError("invalid_advice_identity")
+    store, _ = _get_store()
+    return acknowledge_advice(store, conversation_id=conversation_id, review_id=review_id)
+
+
 # ── Session tags ──────────────────────────────────────────────────────
 
 

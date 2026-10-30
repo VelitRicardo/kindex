@@ -69,6 +69,7 @@ class AttentionInjection:
     message: str
     reason: str = ""
     confidence: float = 0.0
+    review_id: str = ""
 
 
 def _now() -> str:

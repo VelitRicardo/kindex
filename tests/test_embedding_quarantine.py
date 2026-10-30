@@ -192,6 +192,7 @@ class TestEmbeddingQuarantine:
         assert node_id not in _quarantine(store)["items"]
 
     def test_successful_direct_reindex_retires_quarantine(self, store, monkeypatch):
+        store.config.embedding.dimensions = 1
         node_id = store.add_node("Recovered", content="body")
         text = vectors._embedding_text_for_node(store.get_node(node_id))
         store.set_meta(QUARANTINE_META, json.dumps({"version": 1, "items": {
@@ -201,6 +202,7 @@ class TestEmbeddingQuarantine:
             },
         }}))
         store.conn.execute("CREATE TABLE node_vectors (node_id TEXT PRIMARY KEY, embedding BLOB)")
+        vectors._ensure_vector_meta_table(store)
         monkeypatch.setattr(vectors, "ensure_vec_table", lambda _store: True)
         monkeypatch.setattr(vectors, "_embed_document_chunks", lambda *_args, **_kwargs: [{
             "index": 0, "text": text, "embedding": [0.1],

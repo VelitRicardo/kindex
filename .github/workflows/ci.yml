@@ -34,5 +34,5 @@ jobs:
       # The local transport contract tests skip without tmux; the rust
       # adapter's symbol tests need universal-ctags.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux universal-ctags
-      - run: pip install -e ".[dev,mcp]"
+      - run: pip install -e ".[dev,mcp,vectors]"
       - run: pytest -n auto --dist loadfile --timeout 300

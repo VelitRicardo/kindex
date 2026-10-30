@@ -133,7 +133,12 @@
       "kinbase_submit",
       "candidate_create",
       "practical_memory",
-      "correction_references"
+      "correction_references",
+      "sim_control_status",
+      "sim_attention",
+      "sim_backoff",
+      "sim_clear_control",
+      "sim_ack"
     ],
     "resources": [],
     "prompts": []

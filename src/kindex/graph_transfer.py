@@ -10,7 +10,7 @@ from pathlib import PureWindowsPath
 from urllib.parse import urlsplit
 
 from .privacy import redact
-from .schema import AUDIENCES, STANDINGS
+from .schema import AUDIENCES, STANDINGS, validate_storage_node_type
 from .store import _jdumps, _normalize_binding, _now, _uuid, _validate_expires
 from .trust import parse_rfc3339, validate_interval
 
@@ -210,6 +210,8 @@ def _fields(item: dict) -> dict:
     if "id" in item and redact(item["id"]) != item["id"]:
         raise ValueError("Graph ID contains credentials")
     fields = {k: item[k] for k in (*TEXT_FIELDS, *LIST_FIELDS, *CLOCK_FIELDS, "weight", "referent") if k in item}
+    if "type" in fields:
+        validate_storage_node_type(fields["type"])
     for key in TEXT_FIELDS:
         if key in fields and not isinstance(fields[key], str):
             raise ValueError(f"{key} must be text")
@@ -382,6 +384,7 @@ def import_records(store, items: list[dict], *, replace: bool = False, dry_run: 
             if isinstance(source, dict) and not node_id:
                 raise ValueError("Kinbase evidence requires an explicit source node ID")
             existing = _resolve(store, node_id) if node_id else _resolve(store, title, by_title=True)
+            validate_storage_node_type(fields.get("type", (existing or {}).get("type", "concept")))
             node_id = existing["id"] if existing else node_id or _uuid()
             bindings.append((node_id, item.get("edges", [])))
             if existing:
