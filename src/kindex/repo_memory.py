@@ -209,6 +209,10 @@ def _publish_locked(store, root, node_ids: list[str]) -> dict:
     if len(output.encode()) > MAX_BYTES:
         raise ValueError("Repo evidence exceeds 2 MiB; curate the transport explicitly")
     path.parent.mkdir(exist_ok=True)
+    from .setup import git_repo_root, install_kin_text_attributes
+    git_root = git_repo_root(path.parent)
+    if git_root is not None and Path(root).resolve() == git_root.resolve():
+        install_kin_text_attributes(git_root)
     # The caller publishes an explicit set. Write only after every item passed.
     import tempfile
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".knowledge-", suffix=".tmp")
