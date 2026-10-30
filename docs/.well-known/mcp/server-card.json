@@ -57,6 +57,8 @@
     ],
     "tools": [
       "search",
+      "recall_cues_build",
+      "recall_cues_status",
       "add",
       "edit",
       "supersede",

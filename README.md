@@ -169,6 +169,34 @@ For explicitly scoped read-only query preparation and optional additive retained
 evidence, see [query context](docs/query-context.md). The supported pilot paths
 are `kin context-query` and full MCP `query_context`.
 
+Offline recall cues are an experimental, disabled-by-default lexical sidecar.
+Explicitly prepare a bounded batch with `kin recall-cues build --limit 100`
+(repeat `--node ID` to select sources), and inspect counts with
+`kin recall-cues status`; both accept the shared `--config`, `--data-dir`,
+`--profile` and `--json` flags after the subcommand. MCP exposes the same
+operations as `recall_cues_build(node_ids=None, limit=100)` and
+`recall_cues_status()`.
+
+Enable supplemental retrieval in your selected configuration:
+
+```yaml
+recall_cues:
+  enabled: true
+  candidate_limit: 20  # 1..100 additional source candidates
+  rank_weight: 0.10   # relative ranking weight; not factual confidence
+```
+
+Builds make no provider calls and change only derived metadata. Each source
+gets at most three aliases or framed exact source spans; source alias origin
+does not assert human authorship. The index uses only the supporting source
+wording, while answers and context receive only original source nodes. This
+extractive arm cannot invent missing synonyms or demonstrate personalized
+memory benefits. It has an additional candidate/index budget, so compare it
+with ordinary retrieval explicitly. Source changes invalidate cues immediately;
+run an explicit bounded rebuild to refresh them. Roll back retrieval by setting
+`enabled: false`; stored sidecars remain available for later rebuilding. There
+is no automatic maintenance, generation service, or background scheduling.
+
 For coding agents, install both the MCP server and the instruction file. The
 instruction file tells the model how to use kindex: start a session tag, read
 tracked `.kin/config`, check project policy, search before adding, capture
