@@ -4,6 +4,78 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+### Changed
+- `kin ask` and MCP `ask` defaults are for agents asking about their own
+  graph again. 0.49.0 made the configuration measured on LoCoMo,
+  LongMemEval-S and BEAM (F25) the default without noting it here; on a
+  coding graph it read about 16k tokens of evidence per question, answered
+  at reasoning effort xhigh once a graph passed 1,000 nodes, could take
+  "today" from the date of the last imported conversation, and applied
+  answering rules written for those benchmarks' judges. That configuration
+  is now `ask.preset: benchmark` (every option set explicitly still wins),
+  and the published scores are reproduced with it and `--as-of`. The agent
+  defaults:
+  - The wall clock, unless `--as-of` is given (`fixed_clock`,
+    `archive_clock` and `archival_time` off).
+  - No reasoning escalation: `hard_effort`, `large_effort` and
+    `dialogue_effort` are empty, and the named-dialogue planner is off.
+  - No second reading of a declining draft (`reread` off), so answers
+    stream again.
+  - The judge-oriented rules (`details`, `recall_only`, `episode_scope`,
+    `dialogue_focus`, `inference_candidates`, the LongMemEval question-shape
+    rules) and every large-memory (BEAM) option off.
+  - `wide_context_tokens` 8000, `max_output_tokens` 4000 and
+    `timeout_seconds` 120.
+  - A question that gets a detail wrong is told what the record says
+    (`ask.premise_corrections`).
+- MCP `ask` without `answer` returns about 4,000 tokens of evidence (8,000
+  for a count, list or summary), the size `context(level="evidence")`
+  returns, instead of the answer model's budget.
+- Directives `kin digest` reads from imported chats stay out of the
+  session-start prime, attention's candidates and the standing directives
+  until confirmed
+  (`kin set-state <id> confirmed true`; `ask.digest_directives` takes them
+  all). Per-person profiles are written only with `conversations.profiles:
+  true`.
+- Kindex reads and writes text files as UTF-8, including project `.kin/config`,
+  inbox items, and scheduler state. On Windows, older Kindex versions could
+  write non-ASCII text using the system code page. Files containing only ASCII
+  need no conversion. An invalid UTF-8 inbox item is left pending, and invalid
+  scheduler state is left unchanged; Kindex reports the affected path so it can
+  be repaired manually.
+
+  If a previously written text file reports an encoding error, stop Kindex's
+  background jobs and back up the original file and the selected Kindex graph
+  database. Confirm the file's original encoding before conversion; cp1252 is
+  common on older Western Windows installations but is not guaranteed. For a
+  file confirmed to be cp1252, create a UTF-8 copy with Python:
+
+  ```python
+  from pathlib import Path
+
+  source = Path("PATH_FROM_THE_ERROR")
+  raw = source.read_bytes()
+  try:
+      raw.decode("utf-8")
+  except UnicodeDecodeError:
+      pass
+  else:
+      raise SystemExit("Already valid UTF-8; inspect its text instead")
+  candidate = source.with_name(source.name + ".utf8")
+  candidate.write_bytes(raw.decode("cp1252").encode("utf-8"))
+  print(candidate)
+  ```
+
+  Review the copy's text and, for a Git-tracked file, its diff before replacing
+  the original. Then restart Kindex and retry the failed operation. Git tracks
+  selected `.kin` artifacts, but `.kin/local/` and database files are ignored;
+  generated `.kin/index.json` and `.kin/code-map.json` are not complete database
+  backups. Preserve those local files during repair.
+
+  Git attributes can also transform tracked `.kin` text during checkout or
+  `git add`. Kindex now adds UTF-8/LF rules to `.gitattributes` when creating
+  tracked `.kin` text. Commit that file with the artifacts.
+
 ### Added
 - `kindex-remote` serves the graph to agents on other machines over streamable
   HTTP behind Cloudflare Access (extra `kindex[remote]`). It binds loopback
@@ -12,6 +84,24 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   command, reads a host path or ingests from the host is reachable.
 
 ### Fixed
+- `kin ask` counts only imported conversations and their digests as a large
+  memory, not code, notes and sessions, and reads the wide evidence budget
+  only for conversation text that has no digested facts.
+- Named-dialogue detection reads only conversation chunks: two "Key:"
+  lines in a code module or a decision ("Language:", "Rationale:") no longer
+  count as two people talking, and no longer move "today" or pull in
+  dialogue rules. Speaker names are stripped from search terms only there.
+- MCP `ask` with `answer=true` applies the same per-question reading rules
+  as `kin ask`.
+- Expiry is checked against real time, never against a fixed archive clock.
+- `--as-of` dates search recency as well as the prompt, with or without
+  `fixed_clock`.
+- A reread or verification with `hard_effort` unset uses `ask.effort`, as
+  documented, instead of high.
+- MCP `ask` with `answer=true` drafts from the same answer prompt as `kin
+  ask` (particulars, count readings and the other per-question guidance).
+- Scoring search candidates no longer records them as used: only returned
+  nodes are, so a deep search does not reset hundreds of nodes' decay.
 - Attention no longer treats a mutating `git` command as pure read-only
   inspection. The read-only list named subcommands, so `git stash`, `git tag
   v1`, `git branch feature`, `git config key value`, `git remote add` and

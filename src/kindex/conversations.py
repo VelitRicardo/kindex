@@ -213,7 +213,7 @@ def retract_conversation(store: Store, conversation_id: str) -> int:
 
 
 def load_conversations(path: Path) -> list[dict]:
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     try:
         data = json.loads(text)
         return data if isinstance(data, list) else [data]
@@ -722,7 +722,8 @@ def backfill_digests(store: Store, config, ledger=None, *, max_chars: int = 400_
         done[cid] = key
         store.set_meta("conversation_digests", json.dumps(done, sort_keys=True))
         count += 1
-    if getattr(getattr(config, "conversations", None), "facts", False) or claims_enabled(config):
+    if profiles_enabled(config) and (getattr(getattr(config, "conversations", None), "facts", False)
+                                     or claims_enabled(config)):
         build_profiles(store, config, ledger)
     return count
 
@@ -829,6 +830,11 @@ def _profile_subjects(store: Store) -> dict[str, list[dict]]:
         if subject and subject.lower() not in ("assistant", "unknown", "none", "n/a"):
             by.setdefault(subject.lower(), []).append(node)
     return by
+
+
+def profiles_enabled(config) -> bool:
+    """Whether a digest also writes per-person profiles (`conversations.profiles`)."""
+    return bool(getattr(getattr(config, "conversations", None), "profiles", False))
 
 
 def build_profiles(store: Store, config, ledger=None) -> int:
