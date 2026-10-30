@@ -28,7 +28,9 @@ def _step_failed(results: dict, step: str, error: BaseException) -> None:
     """A maintenance step that failed is reported in `errors` and the degraded
     ledger. It used to report 0 with no signal, so a failing drain looked like
     an empty queue."""
-    results.setdefault("errors", {})[step] = safe_error(error)
+    errors = results.setdefault("errors", {})
+    message = safe_error(error)
+    errors[step] = f"{errors[step]}\n{message}" if step in errors else message
     try:
         from .config import record_degraded
         record_degraded("cron", error)
@@ -76,7 +78,7 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
     results["sessions"] = session_count
 
     # 3. Process inbox items
-    inbox_count = _process_inbox(config, store, verbose=verbose)
+    inbox_count = _process_inbox(config, store, verbose=verbose, results=results)
     results["inbox"] = inbox_count
 
     # 4. Apply weight decay (nodes/edges + stigmergic pheromone trails)
@@ -272,118 +274,216 @@ def cron_run(config: "Config", store: "Store", verbose: bool = False) -> dict:
     return results
 
 
+class _ProjectGraphRefused(ValueError):
+    """A fixed diagnostic generated from the registered-store trust check."""
+
+    def __init__(self, *, tracked: bool):
+        super().__init__(
+            "Refusing tracked Kindex storage: registered project graph is tracked; no maintenance performed"
+            if tracked else
+            "Refusing Kindex storage: cannot confirm registered project graph is untracked; no maintenance performed")
+
+
+def _pass_failed(results: dict, step: str, error: BaseException) -> None:
+    """Report the failing operation, never arbitrary store/provider content."""
+    if isinstance(error, _ProjectGraphRefused):
+        _step_failed(results, step, error)
+    else:
+        _step_failed(results, step, RuntimeError(f"{step} failed ({type(error).__name__})"))
+
+
+def _collect_project_registry(store: "Store", registry: dict[str, str]) -> None:
+    import json
+
+    raw = json.loads(store.get_meta("project_graph_dirs") or "{}")
+    if isinstance(raw, dict):
+        registry.update({root: directory for root, directory in raw.items()
+                         if isinstance(root, str) and isinstance(directory, str)})
+
+
+def _existing_project_graph(root: str, directory: str) -> bool:
+    return (Path(root).is_dir() and Path(directory).is_dir()
+            and any((Path(directory) / name).is_file() for name in ("kindex.db", "conv.db")))
+
+
+def _project_config(base_config: "Config", root: str, directory: str) -> "Config":
+    from .config import (_PROJECT_LAYER_UNTRUSTED_KEYS, activate_secret_mask, load_config)
+    from .project_store import tracked_store_refusal
+
+    refusal = tracked_store_refusal(Path(directory))
+    if refusal:
+        # Do not forward git stderr, arbitrary directory names or config content.
+        raise _ProjectGraphRefused(tracked=refusal.startswith("Refusing tracked Kindex storage"))
+    try:
+        cfg = load_config(project_path=root, data_dir=directory)
+    finally:
+        # Resolving another graph must not replace this run's trusted mask.
+        activate_secret_mask(base_config.secret_mask)
+    # The base invocation owns execution, privacy and spend authority. Project
+    # layers still resolve inheritance, local policy and relative paths normally.
+    trusted = base_config.model_copy(deep=True)
+    for field in _PROJECT_LAYER_UNTRUSTED_KEYS:
+        if field in type(cfg).model_fields:
+            setattr(cfg, field, getattr(trusted, field))
+    reminder_nudge = cfg.reminders.remind_kindex_usage
+    cfg.reminders = trusted.reminders
+    cfg.reminders.remind_kindex_usage = reminder_nudge
+    cfg.data_dir = str(platform_io.expanduser(Path(directory)).resolve())
+    cfg._project_path = Path(root).resolve()
+    cfg.active_profile = None
+    cfg.profile_source = "project"
+    cfg._stamp_on_open = False
+    cfg._legacy_data_dir = base_config._legacy_data_dir or base_config.data_dir
+    return cfg
+
+
 def remind_check_all(base_config: "Config", verbose: bool = False) -> list[dict]:
-    """Reminder-only sweep across all configured profiles (plus the legacy
-    remainder graph) AND registered project-local ``.kin`` graphs. Cheap and
-    local — no ingest, no LLM, no embedding.
-
-    Runs first in ``cron_run_all`` and backs ``kin remind check --all-profiles``
-    so due reminders can never be starved by slow maintenance in another
-    profile's pass. Project graphs (a ``data_dir`` declared in a repo's
-    ``.kin/config``) belong to no profile — they are discovered by cron's
-    ``scan_kin_files`` into the ``project_graph_dirs`` meta registry and swept
-    here, since nothing else scheduled would ever fire their reminders.
-    Returns [{profile, fired, auto_snoozed}] per graph.
-    """
-    import json as _json
-
+    """Local reminders-first sweep, once per canonical profile/project graph."""
     from .store import Store
 
     swept_dirs: set[str] = set()
     project_registry: dict[str, str] = {}
+    results: list[dict] = []
 
-    def _one(cfg: "Config", name: str | None) -> dict:
-        # Fault-isolated: a corrupt or locked graph must not abort the sweep
-        # for every other graph's reminders.
-        swept_dirs.add(str(cfg.data_path))
+    def _one(cfg: "Config", name: str | None) -> None:
+        directory = str(cfg.data_path.resolve())
+        if directory in swept_dirs:
+            return
+        swept_dirs.add(directory)
+        result = {"profile": name, "fired": 0, "auto_snoozed": 0,
+                  "data_dir": directory, "source": cfg.profile_source}
+        results.append(result)
         try:
             store = Store(cfg)
-        except Exception as e:
-            return {"profile": name, "fired": 0, "auto_snoozed": 0,
-                    "error": safe_error(e)}
-        try:
-            r = _check_reminders(cfg, store, verbose=verbose)
-            if getattr(cfg, "profile_source", None) == "project":
-                _project_housekeeping(store)
+        except Exception as error:
+            _pass_failed(result, "store_open", error)
+        else:
             try:
-                raw = _json.loads(store.get_meta("project_graph_dirs") or "{}")
-                if isinstance(raw, dict):
-                    project_registry.update(raw)
-            except Exception:
-                pass
-        except Exception as e:
-            return {"profile": name, "fired": 0, "auto_snoozed": 0,
-                    "error": safe_error(e)}
-        finally:
-            store.close()
-        return {"profile": name, "fired": r.get("fired", 0),
-                "auto_snoozed": r.get("auto_snoozed", 0)}
+                try:
+                    result.update(_check_reminders(cfg, store, verbose=verbose))
+                except Exception as error:
+                    _pass_failed(result, "reminders", error)
+                try:
+                    _collect_project_registry(store, project_registry)
+                except Exception as error:
+                    _pass_failed(result, "project_registry", error)
+                if cfg.profile_source == "project":
+                    try:
+                        housekeeping = _project_housekeeping(store)
+                        if housekeeping.get("errors"):
+                            result.setdefault("errors", {}).update(housekeeping["errors"])
+                    except Exception as error:
+                        _pass_failed(result, "housekeeping", error)
+            finally:
+                try:
+                    store.close()
+                except Exception as error:
+                    _pass_failed(result, "store_close", error)
+        if result.get("errors"):
+            result["error"] = next(iter(result["errors"].values()))
 
-    results: list[dict] = []
     profiles = dict(getattr(base_config, "profiles", {}) or {})
     if not profiles:
-        results.append(_one(base_config, getattr(base_config, "active_profile", None)))
+        _one(base_config, getattr(base_config, "active_profile", None))
     else:
         for name, entry in profiles.items():
             cfg = base_config.model_copy(deep=True)
             cfg.data_dir = str(platform_io.expanduser(Path(entry.data_dir)))
-            # Anchor scheduler logs to the base dir (see cron_run_all).
-            cfg._legacy_data_dir = (
-                getattr(base_config, "_legacy_data_dir", None) or base_config.data_dir
-            )
+            cfg._legacy_data_dir = base_config._legacy_data_dir or base_config.data_dir
             cfg.active_profile = name
             cfg.profile_source = "cron"
-            results.append(_one(cfg, name))
-        if getattr(base_config, "default_profile", None) is None:
+            _one(cfg, name)
+        if base_config.default_profile is None:
             cfg = base_config.model_copy(deep=True)
-            legacy_dir = getattr(base_config, "_legacy_data_dir", None)
-            if legacy_dir:
-                cfg.data_dir = legacy_dir
+            cfg.data_dir = base_config._legacy_data_dir or base_config.data_dir
             cfg.active_profile = None
             cfg.profile_source = "legacy"
-            results.append(_one(cfg, None))
+            _one(cfg, None)
 
-    # Project-local .kin graphs, deduped against the dirs already swept:
-    # those a scan found and those the modern lane opened.
-    from .project_store import registered_project_graphs, tracked_store_refusal
-    for root, data_dir in registered_project_graphs().items():
-        project_registry.setdefault(root, data_dir)
-    for project_root, data_dir in sorted(project_registry.items()):
-        if not Path(data_dir).exists():
-            continue  # project deleted since registration — ages out on scan
-        refusal = tracked_store_refusal(Path(data_dir))
-        if refusal:
-            # Registered before the tracked-store rule, or tracked since.
-            results.append({"profile": project_root, "fired": 0, "auto_snoozed": 0,
-                             "error": refusal})
+    from .project_store import registered_project_graphs
+    for root, directory in registered_project_graphs().items():
+        project_registry.setdefault(root, directory)
+    for root, directory in sorted(project_registry.items()):
+        try:
+            if not _existing_project_graph(root, directory):
+                continue
+            if str(Path(directory).resolve()) in swept_dirs:
+                continue
+            cfg = _project_config(base_config, root, directory)
+        except Exception as error:
+            result = {"profile": root, "source": "project", "data_dir": directory,
+                      "fired": 0, "auto_snoozed": 0}
+            _pass_failed(result, "project_config", error)
+            result["error"] = next(iter(result["errors"].values()))
+            results.append(result)
             continue
-        cfg = base_config.model_copy(deep=True)
-        cfg.data_dir = data_dir
-        # Anchor scheduler logs to the base dir (see cron_run_all).
-        cfg._legacy_data_dir = (
-            getattr(base_config, "_legacy_data_dir", None) or base_config.data_dir
-        )
-        cfg.active_profile = None
-        cfg.profile_source = "project"
-        if str(cfg.data_path) in swept_dirs:
-            continue
-        results.append(_one(cfg, project_root))
+        _one(cfg, root)
     return results
 
 
-def _project_housekeeping(store: "Store") -> None:
-    """The local upkeep a project graph gets beside its reminders: expired
-    capture candidates, nodes, task claims and locks. No ingest, LLM or
-    embedding work; each step is isolated."""
+def _project_housekeeping(store: "Store") -> dict:
+    """Existing local project hygiene, with isolated, observable failures."""
     from .locks import cleanup_expired_locks
     from .tasks import cleanup_expired_claims
 
-    for step in (store.prune_capture_candidates, lambda: _expire_nodes(store),
-                 lambda: cleanup_expired_claims(store), lambda: cleanup_expired_locks(store)):
+    results: dict = {}
+    for name, step in (
+            ("capture_candidates_pruned", lambda: store.prune_capture_candidates()),
+            ("nodes_expired", lambda: _expire_nodes(store).get("archived", 0)),
+            ("claims_released", lambda: cleanup_expired_claims(store)),
+            ("locks_cleared", lambda: cleanup_expired_locks(store))):
         try:
-            step()
-        except Exception:
+            results[name] = step()
+        except Exception as error:
+            _pass_failed(results, name, error)
+    return results
+
+
+def _project_maintenance(config: "Config", store: "Store", verbose: bool = False) -> dict:
+    """Service existing queues only; never scan or ingest another workspace.
+
+    The elapsed budget is soft: one already-started provider call can overrun
+    it by its existing timeout/retry allowance. Subsequent drains are deferred.
+    """
+    import time
+
+    from .attention import drain_attention_queue
+    from .reinforce import drain_reinforce_queue
+    from .vectors import drain_embedding_queue
+
+    results = _project_housekeeping(store)
+    deadline = time.monotonic() + max(0, config.embedding.drain_time_budget)
+    for name, drain, fields in (
+            ("reinforce", drain_reinforce_queue, {"graded": "reinforce_graded", "pending": "reinforce_pending"}),
+            ("attention", drain_attention_queue, {"reviewed": "attention_reviewed", "flagged": "attention_flagged", "pending": "attention_pending"}),
+            ("embedding", drain_embedding_queue, {"embedded": "embedded", "pending": "embed_pending"})):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            results[name + "_deferred"] = "time_budget"
             continue
+        try:
+            kwargs = ({"max_jobs": max(0, config.embedding.reindex_max_jobs),
+                       "time_budget": remaining, "report_coverage": False}
+                      if name == "embedding" else {"max_jobs": 1})
+            drained = drain(store, config, **kwargs)
+            for source, target in fields.items():
+                results[target] = drained.get(source, 0)
+            status = drained.get("status")
+            if status is not None:
+                known = {"ok", "empty", "disabled", "unavailable", "failed", "error", "persistence_error"}
+                status = status if isinstance(status, str) and status in known else "unknown"
+                results[name + "_status"] = status
+            if status in {"unavailable", "failed", "error", "persistence_error"}:
+                # Failure statuses are evidence even when a drain returns counters
+                # instead of raising (in particular, failed queue persistence).
+                _step_failed(results, name, RuntimeError(f"{name} queue drain failed ({status})"))
+        except Exception as error:
+            _pass_failed(results, name, error)
+    try:
+        set_run_marker(store)
+    except Exception as error:
+        _pass_failed(results, "run_marker", error)
+    return results
 
 
 def _cron_lock_path(base_config: "Config"):
@@ -402,8 +502,6 @@ def _try_cron_lock(base_config: "Config"):
     opened, or False when another run holds it. Overlapping crontab runs raced on
     session ingest and every unlocked queue."""
     import os
-
-    from . import platform_io
 
     try:
         path = _cron_lock_path(base_config)
@@ -456,107 +554,118 @@ def _cron_run_all(base_config: "Config", verbose: bool = False) -> list[dict]:
     from .store import Store
 
     profiles = dict(getattr(base_config, "profiles", {}) or {})
-
-    # Reminders-first sweep across ALL graphs — profiles or legacy, plus
-    # registered project-local .kin graphs — before any maintenance pass.
-    # Within a pass reminders already run first, but graph B's reminders must
-    # not wait behind graph A's ingest/LLM/embedding work, and project graphs
-    # have no maintenance pass of their own at all.
     sweep_entries = remind_check_all(base_config, verbose=verbose)
-    sweep = {s["profile"]: s for s in sweep_entries}
-    # Base-graph sweep entries are keyed by active_profile (a pinned
-    # `kin cron --profile X` clears profiles but keeps active_profile='X') —
-    # exclude them from the project-graph tally or one firing counts twice.
-    known_names = set(profiles) | {None, getattr(base_config, "active_profile", None)}
-    project_fired = sum(
-        s.get("fired", 0) for s in sweep_entries if s["profile"] not in known_names
-    )
+    sweep = {entry["profile"]: entry for entry in sweep_entries}
+    known_names = set(profiles) | {None, base_config.active_profile}
+    project_fired = sum(entry.get("fired", 0) for entry in sweep_entries
+                        if entry["profile"] not in known_names)
+    project_registry = {entry["profile"]: entry["data_dir"] for entry in sweep_entries
+                        if entry.get("source") == "project" and entry.get("data_dir")}
+    serviced_dirs: set[str] = set()
+    passes: list[dict] = []
+
+    def _one(cfg: "Config", name: str | None, source: str) -> None:
+        directory = str(cfg.data_path.resolve())
+        if directory in serviced_dirs:
+            return
+        serviced_dirs.add(directory)
+        results: dict = {}
+        try:
+            store = Store(cfg)
+        except Exception as error:
+            _pass_failed(results, "store_open", error)
+        else:
+            try:
+                try:
+                    _collect_project_registry(store, project_registry)
+                except Exception as error:
+                    _pass_failed(results, "project_registry", error)
+                try:
+                    maintenance = (_project_maintenance(cfg, store, verbose=verbose)
+                                   if source == "project" else cron_run(cfg, store, verbose=verbose))
+                    errors = results.get("errors", {})
+                    results.update(maintenance)
+                    if errors:
+                        results.setdefault("errors", {}).update(errors)
+                except Exception as error:
+                    _pass_failed(results, "maintenance", error)
+            finally:
+                try:
+                    store.close()
+                except Exception as error:
+                    _pass_failed(results, "store_close", error)
+        swept = sweep.get(name)
+        results["reminders_fired"] = results.get("reminders_fired", 0) + (swept or {}).get("fired", 0)
+        results["reminders_auto_snoozed"] = results.get("reminders_auto_snoozed", 0) + (swept or {}).get("auto_snoozed", 0)
+        if swept and swept.get("errors"):
+            results.setdefault("errors", {}).update({"sweep_" + key: value
+                                                   for key, value in swept["errors"].items()})
+        passes.append({"profile": name, "source": source, "results": results})
 
     if not profiles:
-        store = Store(base_config)
-        try:
-            results = cron_run(base_config, store, verbose=verbose)
-        finally:
-            store.close()
-        swept = sweep.get(getattr(base_config, "active_profile", None))
-        if swept:
-            results["reminders_fired"] += swept["fired"]
-            results["reminders_auto_snoozed"] += swept["auto_snoozed"]
-        if project_fired:
-            results["project_graph_reminders_fired"] = project_fired
-        return [{
-            "profile": getattr(base_config, "active_profile", None),
-            "source": getattr(base_config, "profile_source", "legacy"),
-            "results": results,
-        }]
+        _one(base_config, base_config.active_profile, base_config.profile_source)
+    else:
+        for name, entry in profiles.items():
+            cfg = base_config.model_copy(deep=True)
+            cfg.data_dir = str(platform_io.expanduser(Path(entry.data_dir)))
+            cfg._legacy_data_dir = base_config._legacy_data_dir or base_config.data_dir
+            cfg.active_profile = name
+            cfg.profile_source = "cron"
+            cfg._session_filter = profile_session_filter(profiles, name, base_config.default_profile)
+            _one(cfg, name, "cron")
+        if base_config.default_profile is None:
+            cfg = base_config.model_copy(deep=True)
+            cfg.data_dir = base_config._legacy_data_dir or base_config.data_dir
+            cfg.active_profile = None
+            cfg.profile_source = "legacy"
+            cfg._session_filter = profile_session_filter(profiles, None, None)
+            _one(cfg, None, "legacy-remainder")
 
-    default_name = getattr(base_config, "default_profile", None)
-    passes: list[dict] = []
-    for name, entry in profiles.items():
-        cfg = base_config.model_copy(deep=True)
-        cfg.data_dir = str(platform_io.expanduser(Path(entry.data_dir)))
-        # Keep scheduler logs anchored to the base dir: this pass's config
-        # reaches the adaptive repack (scheduling._apply_crontab), and the
-        # crontab log target must not drift to a profile dir (issue #15).
-        cfg._legacy_data_dir = (
-            getattr(base_config, "_legacy_data_dir", None) or base_config.data_dir
-        )
-        cfg.active_profile = name
-        cfg.profile_source = "cron"
-        cfg._session_filter = profile_session_filter(profiles, name, default_name)
-        if verbose:
-            print(f"== Profile pass: {name} ({cfg.data_dir}) ==")
-        store = Store(cfg)
+    from .project_store import registered_project_graphs
+    for root, directory in registered_project_graphs().items():
+        project_registry.setdefault(root, directory)
+    for root, directory in sorted(project_registry.items()):
         try:
-            results = cron_run(cfg, store, verbose=verbose)
-        finally:
-            store.close()
-        swept = sweep.get(name)
-        if swept:
-            results["reminders_fired"] += swept["fired"]
-            results["reminders_auto_snoozed"] += swept["auto_snoozed"]
-        passes.append({"profile": name, "source": "cron", "results": results})
-
-    if default_name is None:
-        # Legacy-remainder pass: interactive resolution (config tier 6) keeps
-        # writing to the legacy data_dir when nothing matches and no default
-        # is set, so cron must keep servicing that graph and ingest exactly
-        # the sessions no profile owns.
-        cfg = base_config.model_copy(deep=True)
-        legacy_dir = getattr(base_config, "_legacy_data_dir", None)
-        if legacy_dir:
-            cfg.data_dir = legacy_dir
-        cfg.active_profile = None
-        cfg.profile_source = "legacy"
-        cfg._session_filter = profile_session_filter(profiles, None, None)
-        if verbose:
-            print(f"== Legacy remainder pass ({cfg.data_dir}) ==")
-        store = Store(cfg)
-        try:
-            results = cron_run(cfg, store, verbose=verbose)
-        finally:
-            store.close()
-        swept = sweep.get(None)
-        if swept:
-            results["reminders_fired"] += swept["fired"]
-            results["reminders_auto_snoozed"] += swept["auto_snoozed"]
-        passes.append({"profile": None, "source": "legacy-remainder",
-                       "results": results})
+            if not _existing_project_graph(root, directory):
+                continue
+            if str(Path(directory).resolve()) in serviced_dirs:
+                continue
+            cfg = _project_config(base_config, root, directory)
+        except Exception as error:
+            results = {}
+            _pass_failed(results, "project_config", error)
+            swept = sweep.get(root) or {}
+            results.update(reminders_fired=swept.get("fired", 0),
+                           reminders_auto_snoozed=swept.get("auto_snoozed", 0))
+            passes.append({"profile": root, "source": "project", "results": results})
+            continue
+        _one(cfg, root, "project")
     if project_fired and passes:
         passes[0]["results"]["project_graph_reminders_fired"] = project_fired
     return passes
 
 
-def _process_inbox(config: "Config", store: "Store", verbose: bool = False) -> int:
+def _process_inbox(config: "Config", store: "Store", verbose: bool = False,
+                   results: dict | None = None) -> int:
     """Process pending inbox items (markdown files in inbox/)."""
     inbox = config.inbox_dir
     if not inbox.exists():
         return 0
 
     count = 0
+    if results is None:
+        results = {}
     for md_file in sorted(inbox.glob("*.md")):
         try:
-            text = md_file.read_text(errors="replace").strip()
+            text = md_file.read_text(encoding="utf-8").strip()
+        except UnicodeDecodeError:
+            error = ValueError(
+                f"Inbox item {md_file} is not UTF-8; file left unprocessed. "
+                "Back it up and convert a copy after confirming its encoding."
+            )
+            _step_failed(results, "inbox", error)
+            results["inbox_decode_errors"] = results.get("inbox_decode_errors", 0) + 1
+            continue
         except OSError:
             continue
 

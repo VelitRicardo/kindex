@@ -44,6 +44,7 @@ from .config import Config
 from .schema import (
     ALL_NODE_TYPES,
     CREATE_TABLES,
+    RECALL_CUES_SCHEMA,
     LEGACY_DREAM_DOMAIN_EDGE_PROVENANCE,
     NODE_ID_SUGGESTION_SOURCES,
     EDGE_TYPES,
@@ -54,6 +55,7 @@ from .schema import (
     SESSION_PAUSE_REASON_DUPLICATE_MIGRATION,
     SUGGESTION_IDENTITY_KINDS,
     edit_class_for,
+    validate_storage_node_type,
 )
 
 logger = protect_logger(logging.getLogger(__name__))
@@ -340,6 +342,18 @@ def node_retired(node: dict) -> bool:
 
 #: How long the activity log keeps an entry (days).
 ACTIVITY_RETENTION_DAYS = 365
+
+
+def unconfirmed_digest_directive(node: dict) -> bool:
+    """A directive `kin digest` read from an imported conversation that nobody has
+    confirmed yet (`kin set-state <id> confirmed true`). Such a directive stays
+    out of session context and standing directives: an instruction from an old
+    chat is not a standing instruction to coding agents."""
+    extra = node.get("extra") or {}
+    state = extra.get("current_state") if isinstance(extra, dict) else None
+    return (node.get("prov_activity") == "conversation-digest"
+            and not (isinstance(state, dict) and state.get("confirmed") is True))
+
 
 class Store:
     """SQLite-backed knowledge graph with FTS5 full-text search.
@@ -997,6 +1011,9 @@ class Store:
         if current_version < 15:
             self._migrate_v15()
 
+        if current_version < 16:
+            self._migrate_v16()
+
     def _migrate_v8(self) -> None:
         """Atomically upgrade a version-7 store to the state-resilience schema.
 
@@ -1523,6 +1540,24 @@ class Store:
             c.rollback()
             raise
 
+    def _migrate_v16(self) -> None:
+        """Add an independent, source-versioned offline recall sidecar."""
+        c = self._conn
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            for statement in RECALL_CUES_SCHEMA.split(";"):
+                if statement.strip():
+                    c.execute(statement)
+            for table in ("recall_cue_sets", "recall_cues_fts"):
+                columns = {row["name"] for row in c.execute(f"PRAGMA table_info({table})")}
+                if not self.REQUIRED_COLUMNS[table] <= columns:
+                    raise RuntimeError("v16 migration verification failed: recall cue columns")
+            c.execute("UPDATE meta SET value = '16' WHERE key = 'schema_version'")
+            c.commit()
+        except BaseException:
+            c.rollback()
+            raise
+
     # Columns each table must carry for the code that queries it to work.
     # Checked by `kin doctor`, which is the only place that catches the failure
     # class v10 repairs: a table that exists with the right name and the wrong
@@ -1544,6 +1579,10 @@ class Store:
             "node_a", "node_b", "context", "strength",
             "events", "last_event", "last_decay",
         },
+        "recall_cue_sets": {
+            "source_id", "source_hash", "generator_version", "generated_at", "cues_json",
+        },
+        "recall_cues_fts": {"source_id", "text"},
     }
 
     def repair_schema_drift(self) -> dict[str, set[str]]:
@@ -1995,6 +2034,7 @@ class Store:
         when a binding is supplied, and ``true_of`` defaults to ``asserted_at``.
         The store performs no file IO — digests are computed by callers.
         """
+        validate_storage_node_type(node_type)
         if standing not in STANDINGS:
             raise ValueError(f"Unknown standing: {standing!r}")
         # Merge user-supplied tags into domains (supplement, never replace)
@@ -2121,6 +2161,20 @@ class Store:
             return None
         row = self.conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
         return None if row is None else self._row_to_dict(row)
+
+    def peek_nodes(self, node_ids: list[str]) -> dict[str, dict]:
+        """Batch ID hydration with peek_node semantics and no access writes."""
+        ids = list(dict.fromkeys(node_id for node_id in node_ids if node_id))
+        nodes: dict[str, dict] = {}
+        # Stay below SQLite's variable limit even on older supported builds.
+        for first in range(0, len(ids), 500):
+            page = ids[first:first + 500]
+            placeholders = ",".join("?" for _ in page)
+            for row in self.conn.execute(
+                f"SELECT * FROM nodes WHERE id IN ({placeholders})", page
+            ):
+                nodes[row["id"]] = self._row_to_dict(row)
+        return nodes
 
     def get_node_domains(self, node_id: str) -> list[str]:
         """Read a node's domains/tags without touching last_accessed (non-mutating).
@@ -2516,6 +2570,7 @@ class Store:
         if node is None:
             raise KeyError(f"No node with id '{node_id}'")
         node_type = node.get("type", "concept")
+        validate_storage_node_type(node_type)
         cls = edit_class_for(node_type, policy_overrides)
         if cls == "managed":
             raise EditPolicyError(
@@ -2549,10 +2604,11 @@ class Store:
             # must see the first's status flip and abort instead of
             # creating a competing successor.
             row = conn.execute(
-                "SELECT status, extra FROM nodes WHERE id = ?", (node_id,)
+                "SELECT type, status, extra FROM nodes WHERE id = ?", (node_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(f"No node with id '{node_id}'")
+            validate_storage_node_type(row["type"])
             try:
                 cur_extra = json.loads(row["extra"] or "{}")
             except (json.JSONDecodeError, TypeError):
@@ -3284,6 +3340,7 @@ class Store:
                 raise CandidateStateError(f"Candidate is already terminal: {status}")
             if parse_rfc3339(candidate["expires_at"], field="expires_at") <= evaluation_time:
                 raise CandidateStateError("Candidate is expired")
+            validate_storage_node_type(candidate.get("node_type"))
 
             current_token = self._candidate_review_token_locked(conn, row)
             if not hmac.compare_digest(review_token.strip(), current_token):
@@ -4557,7 +4614,8 @@ class Store:
         constraints = self.active_constraints(trigger)
         checkpoints = self.active_checkpoints(trigger)
         watches = self.active_watches()
-        directives = self.all_nodes(node_type="directive", status="active")
+        directives = [d for d in self.all_nodes(node_type="directive", status="active")
+                      if not unconfirmed_digest_directive(d)]
 
         if owner:
             watches = [w for w in watches if (w.get("extra") or {}).get("owner") == owner]

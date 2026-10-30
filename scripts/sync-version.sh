@@ -8,11 +8,11 @@ ROOT="$(git rev-parse --show-toplevel)"
 
 # ── Gather facts ──────────────────────────────────────────────────────
 VERSION=$(grep '^version' "$ROOT/pyproject.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')
-# Tools are registered through the _tool guard, which wraps mcp.tool();
-# a bare @mcp.tool is still counted if one reappears. `grep -c` prints the
+# Tools are registered through the _tool guard, which wraps mcp.tool(), or
+# through _readonly_query_tool; a bare @mcp.tool is still counted if one reappears. `grep -c` prints the
 # count and exits 1 when it is zero, so `|| echo 0` used to print a second
 # line and the docs sed then failed on it: `|| true` keeps the single count.
-MCP_TOOLS=$(grep -cE '^@(_tool|mcp\.tool)\b' "$ROOT/src/kindex/mcp_server.py" || true)
+MCP_TOOLS=$(grep -cE '^@(_tool|_readonly_query_tool|mcp\.tool)\b' "$ROOT/src/kindex/mcp_server.py" || true)
 # No published surface shows a test or CLI command count any more; collecting
 # the whole suite on every commit to fill one cost seconds for nothing.
 

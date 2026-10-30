@@ -404,6 +404,9 @@ def test_setup_merge_driver_install_is_idempotent_and_reversible(tmp_path):
     )
     repo = tmp_path / "r"; repo.mkdir()
     _git(repo, "init", "-q")
+    global_attrs = tmp_path / "global-attributes"
+    global_attrs.write_text(".kin/* working-tree-encoding=CP1252\n", encoding="utf-8")
+    _git(repo, "config", "core.attributesFile", str(global_attrs))
     root = git_repo_root(repo)
     assert root is not None
 
@@ -412,13 +415,21 @@ def test_setup_merge_driver_install_is_idempotent_and_reversible(tmp_path):
     attrs = (repo / ".gitattributes").read_text()
     assert ".kin/index.json merge=kindex" in attrs
     assert ".kin/code-map.json merge=kindex" in attrs
+    assert ".kin/config text eol=lf !working-tree-encoding" in attrs
+    (repo / ".kin").mkdir()
+    config = repo / ".kin" / "config"
+    config.write_text("name: Café\n", encoding="utf-8")
+    _git(repo, "add", ".kin/config")
+    assert subprocess.check_output(["git", "-C", str(repo), "show", ":.kin/config"]) == config.read_bytes()
 
     install_merge_driver(root)  # idempotent — no duplicate lines
     assert (repo / ".gitattributes").read_text().count("index.json merge=kindex") == 1
+    assert (repo / ".gitattributes").read_text().count(".kin/config text eol=lf") == 1
 
     uninstall_merge_driver(root)
     assert _git(repo, "config", "merge.kindex.driver").returncode != 0
     assert "merge=kindex" not in (repo / ".gitattributes").read_text()
+    assert ".kin/config text eol=lf" in (repo / ".gitattributes").read_text()
 
 
 def _init_repo(repo):
@@ -489,4 +500,6 @@ def test_kin_index_respects_no_merge_driver_flag(tmp_path):
     )
     assert r.returncode == 0, r.stderr
     assert _git(repo, "config", "merge.kindex.driver").returncode != 0
-    assert not (repo / ".gitattributes").exists()
+    attrs = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert ".kin/*.json text eol=lf" in attrs
+    assert "merge=kindex" not in attrs

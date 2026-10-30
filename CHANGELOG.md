@@ -4,12 +4,173 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-10-30
+
+### Changed
+- `kin ask` and MCP `ask` defaults are for agents asking about their own
+  graph again. 0.49.0 made the configuration measured on LoCoMo,
+  LongMemEval-S and BEAM (F25) the default without noting it here; on a
+  coding graph it read about 16k tokens of evidence per question, answered
+  at reasoning effort xhigh once a graph passed 1,000 nodes, could take
+  "today" from the date of the last imported conversation, and applied
+  answering rules written for those benchmarks' judges. That configuration
+  is now `ask.preset: benchmark` (every option set explicitly still wins),
+  and the published scores are reproduced with it and `--as-of`. The agent
+  defaults:
+  - The wall clock, unless `--as-of` is given (`fixed_clock`,
+    `archive_clock` and `archival_time` off).
+  - No reasoning escalation: `hard_effort`, `large_effort` and
+    `dialogue_effort` are empty, and the named-dialogue planner is off.
+  - No second reading of a declining draft (`reread` off), so answers
+    stream again.
+  - The judge-oriented rules (`details`, `recall_only`, `episode_scope`,
+    `dialogue_focus`, `inference_candidates`, the LongMemEval question-shape
+    rules) and every large-memory (BEAM) option off.
+  - `wide_context_tokens` 8000, `max_output_tokens` 4000 and
+    `timeout_seconds` 120.
+  - A question that gets a detail wrong is told what the record says
+    (`ask.premise_corrections`).
+- MCP `ask` without `answer` returns about 4,000 tokens of evidence (8,000
+  for a count, list or summary), the size `context(level="evidence")`
+  returns, instead of the answer model's budget.
+- Directives `kin digest` reads from imported chats stay out of the
+  session-start prime, attention's candidates and the standing directives
+  until confirmed
+  (`kin set-state <id> confirmed true`; `ask.digest_directives` takes them
+  all). Per-person profiles are written only with `conversations.profiles:
+  true`.
+- Kindex reads and writes text files as UTF-8, including project `.kin/config`,
+  inbox items, and scheduler state. On Windows, older Kindex versions could
+  write non-ASCII text using the system code page. Files containing only ASCII
+  need no conversion. An invalid UTF-8 inbox item is left pending, and invalid
+  scheduler state is left unchanged; Kindex reports the affected path so it can
+  be repaired manually.
+
+  If a previously written text file reports an encoding error, stop Kindex's
+  background jobs and back up the original file and the selected Kindex graph
+  database. Confirm the file's original encoding before conversion; cp1252 is
+  common on older Western Windows installations but is not guaranteed. For a
+  file confirmed to be cp1252, create a UTF-8 copy with Python:
+
+  ```python
+  from pathlib import Path
+
+  source = Path("PATH_FROM_THE_ERROR")
+  raw = source.read_bytes()
+  try:
+      raw.decode("utf-8")
+  except UnicodeDecodeError:
+      pass
+  else:
+      raise SystemExit("Already valid UTF-8; inspect its text instead")
+  candidate = source.with_name(source.name + ".utf8")
+  candidate.write_bytes(raw.decode("cp1252").encode("utf-8"))
+  print(candidate)
+  ```
+
+  Review the copy's text and, for a Git-tracked file, its diff before replacing
+  the original. Then restart Kindex and retry the failed operation. Git tracks
+  selected `.kin` artifacts, but `.kin/local/` and database files are ignored;
+  generated `.kin/index.json` and `.kin/code-map.json` are not complete database
+  backups. Preserve those local files during repair.
+
+  Git attributes can also transform tracked `.kin` text during checkout or
+  `git add`. Kindex now adds UTF-8/LF rules to `.gitattributes` when creating
+  tracked `.kin` text. Commit that file with the artifacts.
+
 ### Added
+- Explicit read-only source preparation through `kin context-query` and MCP
+  `query_context`, with independently budgeted retained handoff. Session evidence
+  capture, inspection and projection preserve exact source bindings; resume
+  includes evidence only with `--include-evidence` and its original session ID.
+  Ordinary search, resume and hooks retain their defaults.
+- Experimental practical-memory and correction-reference CLI/MCP operations for
+  explicit source-span indexes, retained evidence, exact references and selective
+  expansion. Practical-memory features require explicit request flags; optional
+  handoff and incoming-note navigation remain off, and metadata encoding defaults
+  to `full`. `lossless_common` is an explicit encoding option. No automatic
+  capture, dreaming scheduler, provider call or human beta is activated. Packing
+  can reduce serialized bytes; the fresh comparison found no recall improvement,
+  and organizer effectiveness remains unproven.
+- Optional offline recall cues (`recall_cues.enabled`, disabled by default):
+  bounded explicit CLI/MCP build and status operations maintain a separate
+  lexical sidecar with exact source support and source-only answer evidence.
+  Source changes invalidate cues until rebuilt. Forward migration v16 adds
+  sidecar metadata and FTS tables without changing authoritative nodes.
+- Optional adaptive Sim cadence (`sim.adaptive.enabled`): bounded intervals,
+  quiet-result backoff, provider failure cooldowns, and finite scoped controls.
+  `kin sim attention|backoff --duration-seconds N` requires `--conversation-id ID`
+  or explicit `--store`; `clear-control` removes that override. Matching local
+  MCP controls use the selected graph. Attention never overrides enablement,
+  privacy, or budget gates. Advice expires and tracks generated, emitted, and
+  explicitly acknowledged states; `kin sim ack --conversation-id ID --review-id ID`
+  acknowledges an emitted receipt. `control-status` shows sanitized state.
+
 - `kindex-remote` serves the graph to agents on other machines over streamable
   HTTP behind Cloudflare Access (extra `kindex[remote]`). It binds loopback
   only, verifies the Access JWT on every request, refuses a foreign Host
   header, and serves an allowlist of graph tools; nothing that runs a
   command, reads a host path or ingests from the host is reachable.
+
+### Fixed
+- Conversation claim revisions now include source expiry, and retraction clears
+  that conversation's claim bookkeeping so identical re-imports can regenerate
+  claims. Legacy revision keys refresh once on the next explicit claims backfill,
+  which may use the configured model budget; claims remain off by default.
+- Query handoff now rejects an entire selection containing an unknown evidence
+  ID, including mixed valid/unknown selections, without returning retained text.
+  The independent source baseline remains available, with bounded missing-ID
+  omissions in the empty handoff.
+- Session evidence rejects durable locators with mismatched selected project or
+  profile. New source-context/evidence CLI commands report SQLite failures as
+  generic unavailable errors instead of exposing traceback or SQL details.
+- `kin ask` counts only imported conversations and their digests as a large
+  memory, not code, notes and sessions, and reads the wide evidence budget
+  only for conversation text that has no digested facts.
+- Named-dialogue detection reads only conversation chunks: two "Key:"
+  lines in a code module or a decision ("Language:", "Rationale:") no longer
+  count as two people talking, and no longer move "today" or pull in
+  dialogue rules. Speaker names are stripped from search terms only there.
+- MCP `ask` with `answer=true` applies the same per-question reading rules
+  as `kin ask`.
+- Expiry is checked against real time, never against a fixed archive clock.
+- `--as-of` dates search recency as well as the prompt, with or without
+  `fixed_clock`.
+- A reread or verification with `hard_effort` unset uses `ask.effort`, as
+  documented, instead of high.
+- MCP `ask` with `answer=true` drafts from the same answer prompt as `kin
+  ask` (particulars, count readings and the other per-question guidance).
+- Scoring search candidates no longer records them as used: only returned
+  nodes are, so a deep search does not reset hundreds of nodes' decay.
+- Attention no longer treats a mutating `git` command as pure read-only
+  inspection. The read-only list named subcommands, so `git stash`, `git tag
+  v1`, `git branch feature`, `git config key value`, `git remote add` and
+  `git reflog expire` counted as inspection and the reminders for them never
+  fired. Those subcommands are read-only only in their inspecting form
+  (`git stash list`, `git tag -l`, `git branch`, `git config key`,
+  `git remote -v`, `git reflog`).
+- Attention tells a `git branch` listing from a `git branch` creation. A
+  verbosity flag is not a listing switch: `git branch -v feature/x` creates
+  the branch, and `-v` only makes a listing louder. The listing switches
+  (`--list`, `--merged`, `--contains`, `--points-at`, `--remotes`) take a
+  pattern or a commit-ish, so their argument is never a name to create. The
+  option-shaped writes are writes too: `git branch --set-upstream-to=<upstream>`,
+  `--unset-upstream` and `--edit-description` change the branch configuration
+  without naming a branch, and `git config edit`, `git config -e` and
+  `git config --edit` open the file for editing, while `git config get <key>`
+  reads a single value.
+- Attention also treats `git reflog drop` and `git reflog write` as actions,
+  while `git config --get-color` and `--get-colorbool` remain read-only even
+  when given an optional second argument.
+- Embedding replacement validates complete vectors and publishes atomically;
+  failed jobs rotate behind untouched jobs. Vector search refills candidates up
+  to SQLite's 4,096-candidate limit and batches node hydration without access writes.
+- Cron isolates store failures and maintains registered project queues using
+  trusted execution settings and bounded passes. Busy hooks skip within a short
+  lock deadline and record degraded health instead of waiting for a worker.
+- Storage rejects invalid node types before insertion, import, restore or derived
+  copies. Archive collisions preserve both copies for explicit review, including
+  legacy edge restore conflicts. Existing malformed data is not rewritten.
 
 ## [0.49.0] - 2026-10-14
 

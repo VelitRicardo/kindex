@@ -209,11 +209,15 @@ def retract_conversation(store: Store, conversation_id: str) -> int:
     if conversation_id in done:
         del done[conversation_id]
         store.set_meta("conversation_digests", json.dumps(done, sort_keys=True))
+    claims = _claims_record(store)
+    if conversation_id in claims:
+        del claims[conversation_id]
+        _record_claims(store, claims)
     return removed
 
 
 def load_conversations(path: Path) -> list[dict]:
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     try:
         data = json.loads(text)
         return data if isinstance(data, list) else [data]
@@ -522,7 +526,10 @@ def _write_claims(store: Store, conversation_id: str, pairs: list[tuple[dict, di
 
 def _claims_key(chunks: list[dict]) -> str:
     """What a conversation's claims were read from: a changed key means read them again."""
-    return hashlib.sha256(json.dumps([[c["content"], c["when"]] for c in chunks]).encode()).hexdigest()[:24]
+    # Chunk expiry is copied to each derived claim. Its removal is a revision,
+    # too, even when the conversation text and provenance date are unchanged.
+    revision = [[c["content"], c["when"], c.get("expires")] for c in chunks]
+    return hashlib.sha256(json.dumps(revision).encode()).hexdigest()[:24]
 
 
 def _record_claims(store: Store, done: dict[str, str]) -> None:
@@ -722,7 +729,8 @@ def backfill_digests(store: Store, config, ledger=None, *, max_chars: int = 400_
         done[cid] = key
         store.set_meta("conversation_digests", json.dumps(done, sort_keys=True))
         count += 1
-    if getattr(getattr(config, "conversations", None), "facts", False) or claims_enabled(config):
+    if profiles_enabled(config) and (getattr(getattr(config, "conversations", None), "facts", False)
+                                     or claims_enabled(config)):
         build_profiles(store, config, ledger)
     return count
 
@@ -829,6 +837,11 @@ def _profile_subjects(store: Store) -> dict[str, list[dict]]:
         if subject and subject.lower() not in ("assistant", "unknown", "none", "n/a"):
             by.setdefault(subject.lower(), []).append(node)
     return by
+
+
+def profiles_enabled(config) -> bool:
+    """Whether a digest also writes per-person profiles (`conversations.profiles`)."""
+    return bool(getattr(getattr(config, "conversations", None), "profiles", False))
 
 
 def build_profiles(store: Store, config, ledger=None) -> int:

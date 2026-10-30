@@ -17,7 +17,10 @@ import re
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import Field as _QueryField
+
 from . import platform_io
 from .privacy import redact, redact_serialized, safe_error, redacting_print as print
 
@@ -893,6 +896,94 @@ def _node_detail(store, node: dict, *, graph: str = "project",
 # ── Tools ─────────────────────────────────────────────────────────────
 
 
+class _PracticalConfigError(ValueError):
+    """Safe configuration refusal for the explicit practical-memory tools."""
+
+
+def _practical_config():
+    """Resolve host configuration without the writable singleton initializer."""
+    scoped = _request_scope.get()
+    if scoped is not None:
+        return scoped.config
+    if _config is not None:
+        return _config
+    from .config import load_config
+    try:
+        return load_config()
+    except ValueError:
+        raise _PracticalConfigError("Configuration is unavailable") from None
+
+
+def _strict_practical_arguments(fn):
+    """Retain JSON types and reject extra arguments for these two tools only."""
+    from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
+    from pydantic import ConfigDict
+
+    tool = mcp._tool_manager.get_tool(fn.__name__)
+
+    class StrictArguments(tool.fn_metadata.arg_model):
+        model_config = ConfigDict(arbitrary_types_allowed=True, strict=True, extra="forbid")
+
+    class StrictMetadata(FuncMetadata):
+        def pre_parse_json(self, data):
+            if type(data) is not dict:
+                raise ValueError("Tool arguments must be a JSON object")
+            return data
+
+    previous = tool.fn_metadata
+    tool.fn_metadata = StrictMetadata(
+        arg_model=StrictArguments, output_schema=previous.output_schema,
+        output_model=previous.output_model, wrap_output=previous.wrap_output)
+    tool.parameters = StrictArguments.model_json_schema(by_alias=True)
+    return fn
+
+
+@_strict_practical_arguments
+@mcp.tool()
+def practical_memory(action: str, request_json: str) -> str:
+    """Explicit experimental prepare/audit/organize/persist/index/ack operation.
+
+    The strict JSON request follows practical-memory-contract-v1. No workflow
+    is enabled by calling a read. Persist/index/ack are explicit local writes;
+    a receipt does not prove model delivery or use. No provider is invoked.
+    """
+    from . import practical_memory as memory
+    from .practical_memory_host import run_practical_memory
+    try:
+        request = memory._loads(request_json)
+        result = run_practical_memory(_practical_config(), action, request)
+        return memory._c(result).decode("utf-8")
+    except memory.PracticalMemoryError as exc:
+        return memory._c({"error": {"code": exc.code, "message": exc.message}}).decode("utf-8")
+    except _PracticalConfigError:
+        return memory._c({"error": {"code": "scope_mismatch", "message": "Practical memory scope is unavailable"}}).decode("utf-8")
+    except (sqlite3.Error, OSError, RuntimeError):
+        return memory._c({"error": {"code": "unavailable", "message": "Practical memory storage is unavailable"}}).decode("utf-8")
+
+
+@_strict_practical_arguments
+@mcp.tool()
+def correction_references(operation: str, request_json: str,
+                          metadata_encoding: str = "full", incoming_later: bool = False) -> str:
+    """Explicit experimental reference/expand/correction_add/correction_retire/dream_import.
+
+    Host config and current session select the scope; JSON supplies no grants.
+    Packing and incoming navigation are opt-in. Correction and dream imports
+    are explicit local writes, not verification, truth or source replacement.
+    """
+    from . import correction_references as references
+    from .practical_memory_host import run_correction_references
+    try:
+        request = references._loads(request_json)
+        result = run_correction_references(_practical_config(), operation, request,
+            metadata_encoding=metadata_encoding, incoming_later=incoming_later, recorded_at=operation_now())
+        return references._j(result).decode("utf-8")
+    except references.ReferenceError as exc:
+        return references._j({"error": {"code": exc.code, "message": "Correction reference operation is unavailable"}}).decode("utf-8")
+    except (_PracticalConfigError, sqlite3.Error, OSError, RuntimeError):
+        return references._j({"error": {"code": "unavailable", "message": "Correction reference storage or host context is unavailable"}}).decode("utf-8")
+
+
 @_tool()
 def kinbase_sync(repo: str, mode: str = "auto") -> str:
     """Refresh signed Kinbase evidence; raw verifies bytes, reduced retains governance snapshots.
@@ -1002,6 +1093,31 @@ def kinbase_submit(repo: str, text: str, node_type: str = "concept") -> str:
 
 
 @_tool()
+def recall_cues_build(node_ids: list[str] | None = None, limit: int = 100) -> str:
+    """Explicitly build at most 1000 offline source cue sets; no providers.
+
+    Retrieval remains disabled until recall_cues.enabled is configured.
+    Source IDs select the active graph; this does not mutate source nodes.
+    """
+    from .recall_cues import build_cues
+
+    store, _ = _get_store()
+    try:
+        return _json(build_cues(store, node_ids=node_ids, limit=limit), indent=2)
+    except ValueError as exc:
+        return f"Error: {safe_error(exc)}"
+
+
+@_tool()
+def recall_cues_status() -> str:
+    """Count stored offline recall sets/cues; validity is checked on retrieval."""
+    from .recall_cues import cue_status
+
+    store, _ = _get_store()
+    return _json(cue_status(store), indent=2)
+
+
+@_tool()
 def search(query: str, top_k: int = 10, tags: str = "",
            include_archived: bool = False,
            trusted_only: bool = False, graph: str = "auto") -> str:
@@ -1036,6 +1152,11 @@ def search(query: str, top_k: int = 10, tags: str = "",
     results = []
     home_results = []
     home_grounding: dict = {}
+    client = _mcp_client()
+    scope_args = {}
+    if client:
+        from .agent_adapters import adapter_scoped_out
+        scope_args["node_filter"] = lambda node: not adapter_scoped_out(node.get("tags"), client)
     try:
         with _selected_read_stores(graph) as (selected, home):
             if selected is not None:
@@ -1044,6 +1165,7 @@ def search(query: str, top_k: int = 10, tags: str = "",
                     include_archived=include_archived, fence_stats=fence_stats,
                     trusted_only=trusted_only, evaluation_time=evaluation_time,
                     grounding=grounding,
+                    **scope_args,
                     **({"use_vectors": False} if _request_scope.get() is not None else {}))
             if home is not None:
                 home_fence: dict = {}
@@ -1051,7 +1173,7 @@ def search(query: str, top_k: int = 10, tags: str = "",
                     home, query, top_k=fetch_k,
                     include_archived=include_archived, fence_stats=home_fence,
                     trusted_only=trusted_only, evaluation_time=evaluation_time,
-                    grounding=home_grounding)
+                    grounding=home_grounding, **scope_args)
                 fence_stats["fenced_nodes"] = (fence_stats.get("fenced_nodes", [])
                                                  + home_fence.get("fenced_nodes", []))
                 fence_stats["candidate_count"] = (fence_stats.get("candidate_count", 0)
@@ -1390,6 +1512,10 @@ def _context_hits(stores, topic: str, top_k: int, client: str | None,
 
     hits = {}
     warnings = {}
+    scope_args = {}
+    if client:
+        from .agent_adapters import adapter_scoped_out
+        scope_args["node_filter"] = lambda node: not adapter_scoped_out(node.get("tags"), client)
     for graph, store in stores.items():
         fence, grounding = {}, {}
         if topic:
@@ -1397,6 +1523,7 @@ def _context_hits(stores, topic: str, top_k: int, client: str | None,
                 store, topic, top_k=top_k, trusted_only=trusted_only,
                 evaluation_time=evaluation_time, fence_stats=fence,
                 grounding=grounding,
+                **scope_args,
                 **({"use_vectors": False} if _request_scope.get() is not None else {}),
             )
         else:
@@ -1521,7 +1648,8 @@ def _render_evidence_sources(stores, results, warnings, *, budget: int, client: 
 
         # Directives obey the same client scope and trust admission as hits.
         directives = _trusted_context_nodes(
-            stores[graph], _scope_results(standing_directives(stores[graph]), client),
+            stores[graph], _scope_results(standing_directives(
+                stores[graph], digest=_get_config().ask.digest_directives), client),
             trusted_only=trusted_only, evaluation_time=evaluation_time)
         profiles = (question_profiles(stores[graph], question)
                     if question and not trusted_only and _get_config().ask.profiles else None)
@@ -2105,9 +2233,9 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
 
     Returns the evidence `kin ask` answers from: the matching nodes in full,
     dated and oldest first, with today's date and the standing directives, in
-    graph-local sections whose refs show and edit accept, within `kin ask`'s
-    budget. Counting, listing and ordering questions search deeper and say
-    when the evidence may be incomplete. With answer=True and an LLM configured, it also drafts the
+    graph-local sections whose refs show and edit accept, within about 4,000
+    tokens (8,000 for counts, lists and summaries). Counting, listing and
+    ordering questions search deeper and say when the evidence may be incomplete. With answer=True and an LLM configured, it also drafts the
     answer the way `kin ask` does (planned searches, answering rules), within
     the LLM budget; otherwise it makes no model call.
 
@@ -2115,13 +2243,14 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
         question: Natural language question.
         graph: Read scope: auto, project, or global.
         answer: Also draft an answer with the configured LLM (spends budget).
-        max_tokens: Token budget for the evidence (default: `kin ask`'s, small for
-            a single answer and wide for counts, lists, orderings and advice).
+        max_tokens: Token budget for the evidence (default: about 4,000 tokens,
+            8,000 for counts, lists and summaries; with answer=True, `kin ask`'s budget).
     """
     from .answer import (_INPUT_LIMIT, _USAGE, COMPLETE_TOP_K, COMPLETENESS_INTENTS, _input_left, _prompt_cost,
                          answer_client, answer_prompt, answer_question, answer_system, context_budget,
-                         coverage_note, date_window, draft_answer, favour, fuse, has_facts, input_cap,
-                         memory_scale, needs_breadth, plan_question)
+                         coverage_note, date_window, draft_answer, favour, fuse, input_cap,
+                         memory_scale, named_dialogue, needs_breadth, plan_question, shape_options,
+                         undigested)
 
     q_lower = question.lower()
     if any(p in q_lower for p in ["how do i", "how to", "steps to", "guide to"]):
@@ -2190,14 +2319,28 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
                                  summaries_first=intent == "summary")
                 if not results:
                     return f"[{qtype}] No relevant knowledge found for: {question}"
-                budget = max_tokens if max_tokens > 0 else context_budget(
-                    config.ask, needs_breadth(question, intent, complete), has_facts(results), summary=intent == "summary",
-                    scale=max(memory_scale(store) for store in stores.values()))
+                breadth = needs_breadth(question, intent, complete)
+                if max_tokens > 0:
+                    budget = max_tokens
+                elif llm is None:
+                    # Evidence for the calling agent's own context: what context(level=evidence)
+                    # returns, twice that for a count, list or summary.
+                    budget = MCP_EVIDENCE_TOKENS * (2 if breadth or intent == "summary" else 1)
+                else:
+                    budget = context_budget(
+                        config.ask, breadth, not undigested(results), summary=intent == "summary",
+                        scale=max(memory_scale(store) for store in stores.values()))
+                # The reading rules that fit this question and evidence, as `kin ask` applies them.
+                ask_options = shape_options(config.ask, question, intent, None, named_dialogue(results))
+                answer_config = (config if ask_options is config.ask
+                                 else config.model_copy(update={"ask": ask_options}))
                 if llm is not None and _INPUT_LIMIT.get():
                     # The evidence is sized so the draft fits what the planner left of the cap.
                     system = answer_system(intent if config.ask.rules == "intent" else None, complete,
-                                           options=config.ask)
-                    empty = answer_prompt(question, "", intent, as_of=now[:10], readings=config.ask.readings)
+                                           options=ask_options)
+                    empty = answer_prompt(question, "", intent, as_of=now[:10], readings=ask_options.readings,
+                                          details=ask_options.details, count_readings=ask_options.count_readings,
+                                          options=ask_options)
                     budget = max(500, min(budget, _input_left() - _prompt_cost(system, empty) - 300))
                 evidence, omitted = _render_evidence_sources(
                     stores, results, warnings, budget=budget, client=client, evaluation_time=now, question=question)
@@ -2207,9 +2350,10 @@ def ask(question: str, graph: str = "auto", answer: bool = False, max_tokens: in
                     skipped = ("\n(No answer drafted: no LLM is configured or the budget is spent.)"
                                if answer else "")
                     return f"{header}{skipped}\n\n{evidence}{coverage}"
-                drafted = draft_answer(llm, config, answer_prompt(
-                    question, evidence, intent, as_of=now[:10], readings=config.ask.readings,
-                    coverage=coverage), ledger, intent, complete)
+                drafted = draft_answer(llm, answer_config, answer_prompt(
+                    question, evidence, intent, as_of=now[:10], readings=ask_options.readings,
+                    coverage=coverage, details=ask_options.details,
+                    count_readings=ask_options.count_readings, options=ask_options), ledger, intent, complete)
                 if drafted is None:
                     return f"{header}\n(No answer drafted: the budget ran out.)\n\n{evidence}{coverage}"
                 return f"{drafted}{verify_note}\n\n---\n{header}\n\n{evidence}"
@@ -3110,6 +3254,67 @@ def orient(graph: str = "auto") -> str:
         return f"Error: {exc}"
 
 
+# ── Sim controls (selected store only) ────────────────────────────────
+
+
+def _sim_scope(conversation_id, store_scope):
+    from .adaptive_sim import _scope
+    _scope(conversation_id)
+    if type(store_scope) is not bool or (conversation_id is not None) == store_scope:
+        raise ValueError("explicit_store_or_conversation_required")
+
+
+@_tool()
+def sim_control_status(conversation_id: str | None = None) -> dict:
+    """Read safe adaptive controls and advice receipts in the selected store."""
+    from .adaptive_sim import control_status, _scope
+    _scope(conversation_id)
+    store, config = _get_store()
+    return control_status(store, config, conversation_id=conversation_id)
+
+
+def _sim_override(mode, duration_seconds, conversation_id, store_scope):
+    from .adaptive_sim import set_override
+    _sim_scope(conversation_id, store_scope)
+    if type(duration_seconds) is not int or duration_seconds < 1:
+        raise ValueError("invalid_duration_seconds")
+    store, config = _get_store()
+    return set_override(store, config, mode=mode, duration_seconds=duration_seconds,
+                        conversation_id=conversation_id)
+
+
+@_tool()
+def sim_attention(duration_seconds: int, conversation_id: str | None = None, store_scope: bool = False) -> dict:
+    """Temporarily shorten cadence within the existing safety and spend gates."""
+    return _sim_override("attention", duration_seconds, conversation_id, store_scope)
+
+
+@_tool()
+def sim_backoff(duration_seconds: int, conversation_id: str | None = None, store_scope: bool = False) -> dict:
+    """Pause new provider reviews in an explicitly selected scope."""
+    return _sim_override("backoff", duration_seconds, conversation_id, store_scope)
+
+
+@_tool()
+def sim_clear_control(conversation_id: str | None = None, store_scope: bool = False) -> dict:
+    """Clear a finite override in an explicitly selected scope."""
+    from .adaptive_sim import clear_override
+    _sim_scope(conversation_id, store_scope)
+    store, _ = _get_store()
+    return clear_override(store, conversation_id=conversation_id)
+
+
+@_tool()
+def sim_ack(conversation_id: str, review_id: str) -> dict:
+    """Confirm receipt of one exact unexpired emitted advice item."""
+    from .adaptive_sim import acknowledge_advice, _scope
+    _scope(conversation_id)
+    if conversation_id is None or not isinstance(review_id, str) or not review_id.strip():
+        raise ValueError("invalid_advice_identity")
+    store, _ = _get_store()
+    return acknowledge_advice(store, conversation_id=conversation_id, review_id=review_id)
+
+
 # ── Session tags ──────────────────────────────────────────────────────
 
 
@@ -3243,8 +3448,151 @@ def tag_update(name: str = "", focus: str = "", description: str = "",
         return f"Error: {e}"
 
 
+def _readonly_query_tool(fn):
+    """Register one strict tool without legacy health/degraded write effects.
+
+    FastMCP's normal argument model ignores extras and preparses list strings.
+    Replace only this tool's metadata through the installed ToolManager/Tool
+    interface; all legacy registrations retain the framework's defaults.
+    """
+    from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
+    from mcp.types import ToolAnnotations
+    from pydantic import ConfigDict
+
+    wrapped = _safe_output(fn)
+    tool = mcp._tool_manager.add_tool(
+        wrapped, structured_output=False, annotations=ToolAnnotations(readOnlyHint=True))
+
+    class StrictArguments(tool.fn_metadata.arg_model):
+        model_config = ConfigDict(arbitrary_types_allowed=True, strict=True, extra="forbid")
+
+    class StrictMetadata(FuncMetadata):
+        def pre_parse_json(self, data):
+            # Preserve original JSON types before Pydantic. In particular a
+            # JSON-stringified list/bool is not the corresponding typed value.
+            if not isinstance(data, dict):
+                raise ValueError("Tool arguments must be a JSON object")
+            return data
+
+    previous = tool.fn_metadata
+    tool.fn_metadata = StrictMetadata(
+        arg_model=StrictArguments, output_schema=previous.output_schema,
+        output_model=previous.output_model, wrap_output=previous.wrap_output)
+    tool.parameters = StrictArguments.model_json_schema(by_alias=True)
+    return wrapped
+
+
+# The Field constraints are reflected in this tool's advertised schema as well
+# as the shared strict semantic request model. This does not alter old tools.
+@_readonly_query_tool
+def query_context(
+    query: Annotated[str, _QueryField(min_length=1)],
+    retrieval_max_bytes: Annotated[int, _QueryField(ge=0, le=16384)] = 8192,
+    top_k: Annotated[int, _QueryField(ge=1, le=10)] = 6,
+    evaluation_time: str | None = None,
+    include_handoff: bool = False,
+    evidence_session_id: Annotated[str | None, _QueryField(min_length=1)] = None,
+    handoff_selection: Literal["query_candidates", "explicit_selected"] = "query_candidates",
+    evidence_ids: Annotated[list[str] | None, _QueryField(max_length=12)] = None,
+    handoff_max_bytes: Annotated[int, _QueryField(ge=0, le=16384)] = 0,
+    action: str = "",
+) -> str:
+    """Prepare current stored-source context, optionally adding retained handoff.
+
+    Source and handoff byte caps are independent additional UTF-8 envelope
+    budgets. Server configuration binds project/client; tool arguments cannot
+    override either. Prepared context is not delivery, use or action permission.
+    """
+    from .config import load_config
+    from .query_context import (QueryContextRequest, open_query_store,
+                                prepare_query_context, resolve_client_scope)
+    from .sessions import normalize_project_path
+    store = None
+    try:
+        scoped = _request_scope.get()
+        config = scoped.config if scoped is not None else (_config if _config is not None else load_config())
+        project = normalize_project_path(str(
+            scoped.repo if scoped is not None else (config._project_path or _mcp_project_path())))
+        descriptor = resolve_client_scope(configured=(
+            os.environ.get("KIN_CLIENT"), os.environ.get("KINDEX_CLIENT")))
+        request = QueryContextRequest(query=query, project_path=project, client_scope=descriptor,
+            retrieval_max_bytes=retrieval_max_bytes, top_k=top_k, evaluation_time=evaluation_time,
+            include_handoff=include_handoff, evidence_session_id=evidence_session_id,
+            handoff_selection=handoff_selection, evidence_ids=evidence_ids,
+            handoff_max_bytes=handoff_max_bytes, action=action)
+        store = open_query_store(config)
+        arguments = {key: getattr(request, key) for key in QueryContextRequest.model_fields}
+        return _json(prepare_query_context(store, **arguments))
+    except (ValueError, sqlite3.Error):
+        raise ValueError("Query context is unavailable") from None
+    finally:
+        if store is not None:
+            store.close()
+
+
 @_tool()
-def tag_resume(name: str = "", tokens: int = 1500) -> str:
+def evidence_snapshot(node_id: str) -> str:
+    """Read selected-graph source bytes and metadata digests for explicit capture."""
+    from .evidence import source_snapshot
+    store, _ = _get_store()
+    try:
+        return _json(source_snapshot(store, node_id, project_path=_mcp_project_path()))
+    except (ValueError, KeyError, UnicodeError) as error:
+        return _json({"error": str(error)})
+
+
+@_tool()
+def evidence_retain(session_id: str, node_id: str, expected_source_sha256: str,
+                    expected_metadata_sha256: str, start_byte: int, end_byte: int,
+                    operation_id: str, cue: str = "", kind: str = "evidence",
+                    action: str = "") -> str:
+    """Persist an exact UTF-8 span; stored receipt does not attest delivery or use."""
+    from .evidence import retain_evidence, _selected_ref
+    from .sessions import normalize_project_path
+    store, _ = _get_store()
+    project = normalize_project_path(_mcp_project_path())
+    try:
+        return _json(retain_evidence(
+            store, session_id=session_id, project_path=project,
+            source_ref=_selected_ref(store, node_id, project),
+            expected_source_sha256=expected_source_sha256,
+            expected_metadata_sha256=expected_metadata_sha256,
+            start_byte=start_byte, end_byte=end_byte, operation_id=operation_id,
+            cue=cue, kind=kind, action=action,
+        ))
+    except (ValueError, KeyError, UnicodeError) as error:
+        return _json({"error": str(error)})
+
+
+@_tool()
+def evidence_inspect(session_id: str) -> str:
+    """Read historical captures and recompute current source admission."""
+    from .evidence import inspect_evidence
+    store, _ = _get_store()
+    try:
+        return _json(inspect_evidence(store, session_id=session_id,
+                                      project_path=_mcp_project_path()))
+    except (ValueError, KeyError, UnicodeError) as error:
+        return _json({"error": str(error)})
+
+
+@_tool()
+def evidence_project(session_id: str, action: str = "", max_aux_bytes: int = 4096) -> str:
+    """Prepare escaped current context under an additional exact byte ceiling."""
+    from .evidence import project_evidence
+    store, _ = _get_store()
+    try:
+        return _json(project_evidence(store, session_id=session_id,
+                                      project_path=_mcp_project_path(),
+                                      action=action, max_aux_bytes=max_aux_bytes))
+    except (ValueError, KeyError, UnicodeError) as error:
+        return _json({"error": str(error)})
+
+
+@_tool()
+def tag_resume(name: str = "", tokens: int = 1500, include_evidence: bool = False,
+               evidence_session_id: str | None = None, evidence_max_bytes: int = 4096,
+               evidence_action: str = "") -> str:
     """Resume a session tag — get full context for continuing work.
 
     Args:
@@ -3252,6 +3600,10 @@ def tag_resume(name: str = "", tokens: int = 1500) -> str:
         tokens: Exact UTF-8 byte budget for the resume block. The argument name
             is retained for compatibility; provider-token guarantees require a
             direct library caller to supply that provider's exact counter.
+        include_evidence: Append explicit source-bound evidence (default false).
+        evidence_session_id: Stable session ID matching this tag and project.
+        evidence_max_bytes: Additional evidence UTF-8 ceiling, separate from tokens.
+        evidence_action: Exact advisory prerequisite action key.
     """
     store, _ = _get_store()
     from .sessions import format_resume_context, list_tags, resume_tag
@@ -3276,6 +3628,12 @@ def tag_resume(name: str = "", tokens: int = 1500) -> str:
         return "\n".join(lines)
 
     try:
+        if include_evidence:
+            format_resume_context(
+                store, name, max_tokens=0, project_path=project_path,
+                include_evidence=True, evidence_session_id=evidence_session_id,
+                evidence_max_bytes=evidence_max_bytes, evidence_action=evidence_action,
+            )
         resume_tag(store, name, project_path=project_path)
         return format_resume_context(
             store,
@@ -3283,6 +3641,9 @@ def tag_resume(name: str = "", tokens: int = 1500) -> str:
             max_tokens=tokens,
             evaluation_time=operation_now(),
             project_path=project_path,
+            include_evidence=include_evidence,
+            evidence_session_id=evidence_session_id,
+            evidence_max_bytes=evidence_max_bytes, evidence_action=evidence_action,
         )
     except ValueError as e:
         return f"Error: {e}"

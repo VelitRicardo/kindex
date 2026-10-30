@@ -671,81 +671,85 @@ def _read_meta_list(store: "Store", key: str) -> list[dict]:
 
 
 def enqueue_sim_review(
-    store: "Store",
-    config: Config,
-    conversation_id: str,
-    window: str,
-    *,
-    tick: int,
-    intent: str | None = None,
-    scope: dict | None = None,
+    store: "Store", config: Config, conversation_id: str, window: str, *, tick: int,
+    intent: str | None = None, scope: dict | None = None, event: str = "activity",
 ) -> bool:
-    """Snapshot a window for later supervisory review. Cheap, SQLite-only.
-
-    Deduped by conversation (a fresher window replaces a staler one). Gated to
-    roughly every `tick_interval` ticks so we don't queue every prompt.
-    """
-    if not sim_effective_enabled(store, config) or not conversation_id \
-            or not (window or "").strip():
+    """Admit one observed window, committing dedup, due time and queue together."""
+    if not sim_effective_enabled(store, config) or not conversation_id or not (window or "").strip():
         return False
-    interval = max(1, int(config.sim.tick_interval or 1))
-    if tick % interval != 0:
-        from .supervisor import read_state, write_state
-        if read_state(store, conversation_id).get("state") not in (
-                "reviewed_quiet", "queued", "reviewing", "failed", "unavailable", "budget_exhausted", "delivered"):
-            write_state(store, conversation_id, "skipped", reason="cadence")
-        return False
-    # Tier 0: confident banter is skipped before it costs anything (round UP when
-    # unsure — only a confidently-trivial window is dropped).
+    from . import adaptive_sim as adaptive
+    from .sim_queue import _put, _list
+    from .supervisor import store_lock, config_snapshot, write_state, record_health
+    import hashlib
+    from uuid import uuid4
     if config.sim.triage_banter and _looks_trivial(window):
         _bump_counter(store, "triaged_skips")
-        from .supervisor import write_state
         write_state(store, conversation_id, "skipped", reason="banter")
         return False
-
-    from .supervisor import store_lock, config_snapshot, write_state
-    with store_lock(store, "queue"):
-        import hashlib
-        subject = hashlib.sha256(json.dumps([window, intent, config_snapshot(config)], sort_keys=True).encode()).hexdigest()
+    with store_lock(store, "queue", timeout=0.05):
+        try:
+            control = adaptive.read_control(store)
+        except adaptive.AdaptiveStateError:
+            write_state(store, conversation_id, "skipped", reason="invalid_adaptive_state")
+            return False
+        snapshot = config_snapshot(config)
+        subject = hashlib.sha256(json.dumps([window, intent, snapshot], sort_keys=True).encode()).hexdigest()
         admission_key = "sim.admission." + conversation_id
         if store.get_meta(admission_key) == subject:
             return False
-        store.set_meta(admission_key, subject)
-        previous_queue = _read_meta_list(store, SIM_QUEUE_META)
-        queue = [j for j in previous_queue if j.get("conversation_id") != conversation_id]
-        queue.append({
-            "conversation_id": conversation_id,
-            "scope": scope,
-            "review_id": subject,
-            "window": window[-config.sim.window_chars:],
-            "fingerprint": _tail_fingerprint(window),
-            "intent": _capture_intent(store) if intent is None else intent,
-            "guidance": get_sim_guidance(store) if intent is None else "",
-            "config": config_snapshot(config),
-            "tick": tick,
-            "at": _now(),
-        })
-        retained = queue[-config.sim.max_queue:]
-        store.set_meta(SIM_QUEUE_META, json.dumps(retained))
-        retained_ids = {(j.get("conversation_id"), j.get("review_id")) for j in retained}
-        for previous in previous_queue:
-            if (previous.get("conversation_id"), previous.get("review_id")) in retained_ids:
-                continue
-            evicted = previous.get("conversation_id")
-            if evicted == conversation_id:
-                _record_advisory_discard(previous, reason="superseded", source="hook")
-                continue
-            # Another conversation pushed out by max_queue: its state no longer
-            # says queued, and its admission key is released so the same
-            # window can queue again.
-            _record_advisory_discard(previous, reason="evicted", source="hook")
-            if isinstance(evicted, str) and evicted:
-                store.conn.execute("DELETE FROM meta WHERE key = ?", ("sim.admission." + evicted,))
+        clock = adaptive.now()
+        reason = adaptive.admission_reason(control, config.sim.adaptive, conversation_id, event=event, clock=clock)
+        if not reason and not config.sim.adaptive.enabled and tick % max(1, int(config.sim.tick_interval or 1)):
+            reason = "cadence"
+        if reason:
+            # Meaningful observations may shorten a due time before its minimum;
+            # save that decision even though this particular observation is early.
+            store.conn.execute("BEGIN IMMEDIATE")
+            try:
+                adaptive.put_control(store, control, config.sim.adaptive)
                 store.conn.commit()
-                write_state(store, evicted, "skipped", reason="evicted")
-        write_state(store, conversation_id, "queued", reason="cadence", review_tick=tick)
-        from .supervisor import record_health
-        record_health(scope, "review", state="queued", source="hook", event_id=subject + ":queued", review_id=subject)
+            except BaseException:
+                store.conn.rollback()
+                raise
+            write_state(store, conversation_id, "skipped", reason=reason)
+            return False
+        review_id = hashlib.sha256(json.dumps([str(store.db_path), conversation_id, subject, uuid4().hex]).encode()).hexdigest()
+        previous_queue = _list(store, SIM_QUEUE_META)
+        queue = [j for j in previous_queue if j.get("conversation_id") != conversation_id]
+        queue.append({"conversation_id": conversation_id, "scope": scope, "review_id": review_id,
+                      "window": window[-config.sim.window_chars:], "fingerprint": _tail_fingerprint(window),
+                      "intent": _capture_intent(store) if intent is None else intent,
+                      "guidance": get_sim_guidance(store) if intent is None else "", "config": snapshot,
+                      "tick": tick, "at": _now()})
+        retained = queue[-max(1, config.sim.max_queue):]
+        retained_ids = {(j.get("conversation_id"), j.get("review_id")) for j in retained}
+        evictions = [j for j in previous_queue if (j.get("conversation_id"), j.get("review_id")) not in retained_ids]
+        adaptive.admitted(control, config.sim.adaptive, conversation_id, clock)
+        store.conn.execute("BEGIN IMMEDIATE")
+        try:
+            _put(store, SIM_QUEUE_META, retained)
+            # Admission is a raw subject string, not a JSON string.
+            store.conn.execute("INSERT INTO meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                               (admission_key, subject))
+            for previous in evictions:
+                conv = previous.get("conversation_id")
+                why = "superseded" if conv == conversation_id else "evicted"
+                adaptive.record_advice(control, config.sim.adaptive, previous, status="discarded", reason=why, clock=clock)
+                if conv and conv != conversation_id:
+                    store.conn.execute("DELETE FROM meta WHERE key=?", ("sim.admission." + conv,))
+                    prior = json.loads(store.get_meta("supervisor.state." + conv) or "{}")
+                    _put(store, "supervisor.state." + conv, {**prior, "state": "skipped", "reason": why, "updated_at": _now()})
+            adaptive.put_control(store, control, config.sim.adaptive)
+            prior = json.loads(store.get_meta("supervisor.state." + conversation_id) or "{}")
+            _put(store, "supervisor.state." + conversation_id,
+                 {**prior, "state": "queued", "reason": "cadence", "review_tick": tick, "updated_at": _now()})
+            store.conn.commit()
+        except BaseException:
+            store.conn.rollback()
+            raise
+        for previous in evictions:
+            _record_advisory_discard(previous, reason="superseded" if previous.get("conversation_id") == conversation_id else "evicted", source="hook")
+        record_health(scope, "review", state="queued", source="hook", event_id=review_id + ":queued", review_id=review_id)
     return True
 
 
@@ -775,33 +779,124 @@ def drain_sim_queue(
         result = _drain_claimed(store, config, client=client, ledger=ledger, max_jobs=max_jobs)
         if background and result["status"] == "ok":
             with store_lock(store, "queue"):
-                remaining = bool(_read_meta_list(store, SIM_QUEUE_META))
+                remaining = _has_runnable_reviews(store, config)
             if remaining and not spawn_background_drain(config):
                 result["status"] = "handoff_failed"
         return result
 
 
+def _live_admission_config(snapshot, live):
+    cfg = snapshot.model_copy(deep=True)
+    cfg.llm.enabled = snapshot.llm.enabled and live.llm.enabled
+    cfg.sim.advocate.enabled = snapshot.sim.advocate.enabled and live.sim.advocate.enabled
+    for name in ("max_review_cost", "max_conversation_cost", "max_daily_reviews", "max_conversation_reviews"):
+        setattr(cfg.sim, name, min(getattr(snapshot.sim, name), getattr(live.sim, name)))
+    for name in ("daily", "weekly", "monthly"):
+        setattr(cfg.budget, name, min(getattr(snapshot.budget, name), getattr(live.budget, name)))
+    return cfg
+
+
+def _call_with_live_budget(config, ledger, *args, **kwargs):
+    if ledger is None or not hasattr(ledger, "limits"):
+        return call_sim(config, ledger, *args, **kwargs)
+    previous = ledger.limits
+    limits = config.budget.model_copy(deep=True)
+    for name in ("daily", "weekly", "monthly"):
+        setattr(limits, name, min(getattr(previous, name), getattr(limits, name)))
+    ledger.limits = limits
+    try:
+        return call_sim(config, ledger, *args, **kwargs)
+    finally:
+        ledger.limits = previous
+
+
+def controlled_sim_check(store, config, ledger, window, conversation_id, **kwargs):
+    """Manual reviews share worker ownership and the finite control gates."""
+    from uuid import uuid4
+    from . import adaptive_sim as adaptive
+    from .supervisor import store_lock
+    with store_lock(store, "worker", blocking=False):
+        if not sim_effective_enabled(store, config):
+            return None, {"status": "disabled"}
+        if config.sim.backend == "api" and not config.sim.command and not config.llm.enabled:
+            return None, {"status": "llm_disabled"}
+        review_id = uuid4().hex
+        try:
+            reason = adaptive.prepare_dispatch(store, config, conversation_id, review_id)
+        except adaptive.AdaptiveStateError:
+            reason = "invalid_adaptive_state"
+        if reason:
+            return None, {"status": reason}
+        result, accounting = _call_with_live_budget(config, ledger, window, conversation_id, **kwargs)
+        status = accounting.get("status")
+        outcome = ("advisory" if result and result.note and result.rating >= config.sim.threshold else "quiet") if status == "ok" else (
+            "failure" if status in adaptive.PROVIDER_FAILURES else "neutral")
+        with store_lock(store, "queue"):
+            control = adaptive.read_control(store)
+            adaptive.apply_outcome(control, config.sim.adaptive, str(store.db_path), conversation_id,
+                                   review_id, outcome, adaptive.now())
+            store.conn.execute("BEGIN IMMEDIATE")
+            try:
+                adaptive.put_control(store, control, config.sim.adaptive)
+                store.conn.commit()
+            except BaseException:
+                store.conn.rollback()
+                raise
+        return result, accounting
+
+
+def _has_runnable_reviews(store, config):
+    from . import adaptive_sim as adaptive
+    try:
+        state = adaptive.read_control(store)
+    except adaptive.AdaptiveStateError:
+        return False
+    return sim_effective_enabled(store, config) and any(
+        not adaptive.admission_reason(state, config.sim.adaptive, job.get("conversation_id"), cadence=False)
+        for job in _read_meta_list(store, SIM_QUEUE_META))
+
+
 def _drain_claimed(store, config, *, client=None, ledger=None, max_jobs=5):
     from dataclasses import asdict
+    from . import adaptive_sim as adaptive
     from .supervisor import read_state, restore_config, write_state
     from .sim_queue import (CLAIM_META, SavedSim, acknowledge, claim_next,
-                            flush_receipts, save_claim)
+                            flush_receipts, save_claim, park_claim, TerminalOutcome, ReviewPersistenceError)
     flush_receipts(store)
-    if not sim_effective_enabled(store, config):
-        return {"status": "disabled", "reviewed": 0, "pending": 0}
     reviewed = flagged = 0
+    deferred = set()
+    deferred_reason = ""
     for _ in range(max(0, max_jobs)):
-        claim, recovered = claim_next(store)
+        claim, recovered = claim_next(store, exclude_review_ids=deferred)
         if claim is None:
             break
         job = claim.job
         conv, window = job.get("conversation_id"), job.get("window") or ""
 
-        def finish(state, reason, health_state=None, health_reason="review_failed"):
-            acknowledge(store, claim, state=state, reason=reason,
-                        health_state=health_state or state, health_reason=health_reason)
+        def checkpoint():
+            try:
+                save_claim(store, claim)
+            except Exception as error:
+                raise ReviewPersistenceError("review_checkpoint_failed") from error
+
+        def finish(state, reason, health_state=None, health_reason="review_failed", outcome="neutral"):
+            claim.terminal = TerminalOutcome(state=state, reason=reason, health_state=health_state or state,
+                                             health_reason=health_reason, outcome=outcome)
+            checkpoint()
+            try:
+                acknowledge(store, claim, config=config, **claim.terminal.model_dump())
+            except Exception as error:
+                raise ReviewPersistenceError("review_terminal_commit_failed") from error
             flush_receipts(store)
 
+        if claim.terminal is not None:
+            finish(**claim.terminal.model_dump())
+            continue
+
+        if claim.phase == "ready":
+            finish("queued", "review_complete_pending_delivery", "completed", "advisory", outcome="advisory")
+            flagged += 1
+            continue
         if recovered and claim.phase in {"sim_started", "advocate_started"}:
             # A dead worker may already have paid. Keep its saved Sim result in
             # the receipt, report uncertainty, and never replay either provider.
@@ -818,41 +913,59 @@ def _drain_claimed(store, config, *, client=None, ledger=None, max_jobs=5):
         if cfg.data_path != store.config.data_path:
             finish("failed", "store_mismatch")
             continue
-        if not sim_effective_enabled(store, cfg):
+        if not sim_effective_enabled(store, config) or not sim_effective_enabled(store, cfg):
             finish("disabled", "kill_switch", health_state="discarded", health_reason="superseded")
             continue
+        # Keep the provider/model snapshot; live limits may only tighten it.
+        cfg = _live_admission_config(cfg, config)
         write_state(store, conv, "reviewing", reason="claimed", review_tick=job.get("tick", 0))
         intent = job.get("intent") or ""
         try:
-            if claim.phase == "ready":
-                finish("queued", "review_complete_pending_delivery", "completed", "advisory")
-                flagged += 1
-                continue
             budget = (ledger or BudgetLedger(cfg.ledger_path, cfg.budget)) if cfg.sim.backend == "api" else None
             grounding = build_sim_grounding(store, window, cfg)
             if claim.result is None:
+                # An injected client cannot bypass current API consent either.
+                # Native/Ollama and explicit commands have their own Sim opt-in.
+                if cfg.sim.backend == "api" and not cfg.sim.command and not cfg.llm.enabled:
+                    finish("disabled", "llm_disabled", health_state="discarded", health_reason="superseded")
+                    continue
+                from . import adaptive_sim as adaptive
+                try:
+                    blocked = adaptive.prepare_dispatch(store, config, conv, job.get("review_id") or claim.attempt_id)
+                except adaptive.AdaptiveStateError:
+                    blocked = "invalid_adaptive_state"
+                if blocked:
+                    write_state(store, conv, "skipped", reason=blocked)
+                    try:
+                        park_claim(store, claim, config)
+                    except Exception as error:
+                        raise ReviewPersistenceError("review_parking_commit_failed") from error
+                    deferred.add(job.get("review_id"))
+                    deferred_reason = blocked
+                    continue
                 # Durable dispatch boundary comes before any possible provider
                 # spend. Recovery earlier than this point can safely resume.
                 claim.phase = "sim_started"
-                save_claim(store, claim)
-                result, acct = call_sim(cfg, budget, window, conv, client=client,
+                checkpoint()
+                result, acct = _call_with_live_budget(cfg, budget, window, conv, client=client,
                                        guidance=job.get("guidance", ""), grounding=grounding, intent=intent)
                 status = acct.get("status", "unknown")
                 if status != "ok" or result is None:
                     state = ("budget_exhausted" if "budget" in status else
                              "unavailable" if "unavailable" in status else "failed")
                     finish(state, status, health_reason="budget_exhausted" if state == "budget_exhausted" else
-                           "llm_unavailable" if state == "unavailable" else "review_failed")
+                           "llm_unavailable" if state == "unavailable" else "review_failed",
+                           outcome="failure" if status in adaptive.PROVIDER_FAILURES else "neutral")
                     continue
                 claim.result = SavedSim(**asdict(result))
                 claim.phase = "sim_saved"
-                save_claim(store, claim)
+                checkpoint()
             else:
                 result = _SimResult(**claim.result.model_dump())
             reviewed += 1
             if not result.note or result.rating < cfg.sim.threshold:
                 _bump_counter(store, "sub_threshold")
-                finish("reviewed_quiet", "below_threshold", health_reason="no_findings")
+                finish("reviewed_quiet", "below_threshold", health_reason="no_findings", outcome="quiet")
                 continue
             item = {
                 "conversation_id": conv, "scope": job.get("scope"), "review_id": job.get("review_id"),
@@ -861,6 +974,8 @@ def _drain_claimed(store, config, *, client=None, ledger=None, max_jobs=5):
                 "stakes": result.stakes, "escalate": result.escalate,
                 "escalate_reason": result.escalate_reason, "intent": intent,
                 "fingerprint": job.get("fingerprint") or [], "tick": job.get("tick", 0), "at": _now(),
+                "generated_at": adaptive.now(),
+                "expires_at": adaptive.now() + config.sim.adaptive.advice_ttl_seconds,
             }
             if result.escalate and not _advocate_gate_open(store, cfg, conv, job.get("tick", 0)):
                 state, reason = (("disabled", "recommend_only") if cfg.sim.backend != "api" or not cfg.sim.advocate.enabled else
@@ -869,7 +984,7 @@ def _drain_claimed(store, config, *, client=None, ledger=None, max_jobs=5):
                 write_state(store, conv, None, advocate_state=state, advocate_reason=reason)
             if result.escalate and _advocate_gate_open(store, cfg, conv, job.get("tick", 0)):
                 claim.phase = "advocate_started"
-                save_claim(store, claim)
+                checkpoint()
                 ran, survivors = maybe_escalate_to_advocate(
                     store, cfg, budget, window, grounding, intent, result, conv, client=client)
                 if ran:
@@ -882,9 +997,11 @@ def _drain_claimed(store, config, *, client=None, ledger=None, max_jobs=5):
                         _bump_counter(store, "escalation_failures")
             claim.pending = item
             claim.phase = "ready"
-            save_claim(store, claim)
-            finish("queued", "review_complete_pending_delivery", "completed", "advisory")
+            checkpoint()
+            finish("queued", "review_complete_pending_delivery", "completed", "advisory", outcome="advisory")
             flagged += 1
+        except ReviewPersistenceError:
+            raise
         except Exception as exc:
             # A completed transaction may already have removed this exact claim;
             # never overwrite its successful receipt after a later output error.
@@ -892,7 +1009,8 @@ def _drain_claimed(store, config, *, client=None, ledger=None, max_jobs=5):
                 raise
             write_state(store, conv, "failed", reason="review_error", error=safe_error(exc))
             finish("failed", "review_error")
-    return {"status": "ok", "reviewed": reviewed, "flagged": flagged,
+    status = "deferred" if deferred and not _has_runnable_reviews(store, config) else "ok"
+    return {"status": status, "reason": deferred_reason if status == "deferred" else "", "reviewed": reviewed, "flagged": flagged,
             "pending": len(_read_meta_list(store, SIM_PENDING_META))}
 
 
@@ -1295,59 +1413,63 @@ def pop_pending_sim_injection(
     """
     if not sim_effective_enabled(store, config) or not conversation_id:
         return None
-    pending_list = _read_meta_list(store, SIM_PENDING_META)
-    if not pending_list:
-        return None
-
-    mine = next((p for p in pending_list if p.get("conversation_id") == conversation_id), None)
-    if not mine:
-        return None
-
-    # Always consume it: either we surface it now or it's stale — never re-queue.
-    rest = [p for p in pending_list if p.get("conversation_id") != conversation_id]
-    store.set_meta(SIM_PENDING_META, json.dumps(rest))
-    # Only acknowledge discard/delivery after the pending update succeeds.
-    for previous in pending_list:
-        if (previous is not mine and previous.get("conversation_id") == conversation_id
-                and previous.get("review_id") != mine.get("review_id")):
-            _record_advisory_discard(previous, reason="superseded", source="hook")
-
-    age = tick - int(mine.get("tick", tick))
-    if age > config.sim.max_stale_ticks:
-        from .supervisor import write_state
-        write_state(store, conversation_id, "skipped", reason="stale_age",
-                    delivery_drop_reason="stale_age", delivery_drop_tick=tick)
-        _record_advisory_discard(mine, reason="stale", source="hook")
-        return None
-    overlap = _overlap(mine.get("fingerprint") or [], _tail_fingerprint(current_window))
-    if overlap < config.sim.min_overlap:
-        from .supervisor import write_state
-        write_state(store, conversation_id, "skipped", reason="stale_window",
-                    delivery_drop_reason="stale_window", delivery_drop_tick=tick)
-        _record_advisory_discard(mine, reason="stale", source="hook")
-        return None
-
-    # Focus-staleness drop: if the user's stated goal changed between enqueue and
-    # now, an alignment note judged against the DEAD goal would fight the user's
-    # (correct, newly-redirected) work. The note was reasoned from a superseded
-    # intent — drop it rather than surface a directive pointing back at the old goal.
-    enqueue_intent = _normalize(str(mine.get("intent") or ""))
-    if enqueue_intent:
+    from . import adaptive_sim as adaptive
+    from .supervisor import store_lock, write_state
+    from .sim_queue import _list, _put
+    with store_lock(store, "queue", timeout=0.05):
+        pending_list = _list(store, SIM_PENDING_META)
+        mine = next((p for p in pending_list if p.get("conversation_id") == conversation_id), None)
+        if mine is None:
+            return None
+        control = adaptive.read_control(store)
+        clock = adaptive.now()
+        timing = adaptive.generation_time(mine, clock, config.sim.adaptive.advice_ttl_seconds)
+        reason = "ttl" if timing is None or clock >= timing[1] else ""
+        age = tick - int(mine.get("tick", tick))
+        if not reason and age > config.sim.max_stale_ticks:
+            reason = "stale_age"
+        if not reason and _overlap(mine.get("fingerprint") or [], _tail_fingerprint(current_window)) < config.sim.min_overlap:
+            reason = "stale_window"
+        enqueue_intent = _normalize(str(mine.get("intent") or ""))
         current_intent = _normalize(_capture_intent(store) if intent is None else intent)
-        if current_intent and current_intent != enqueue_intent:
-            _bump_counter(store, "focus_stale_drops")
-            from .supervisor import write_state
-            write_state(store, conversation_id, "skipped", reason="stale_goal",
-                        delivery_drop_reason="stale_goal", delivery_drop_tick=tick)
-            _record_advisory_discard(mine, reason="superseded", source="hook")
+        if not reason and enqueue_intent and current_intent and current_intent != enqueue_intent:
+            reason = "stale_goal"
+        rest = [p for p in pending_list if p.get("conversation_id") != conversation_id]
+        receipt = adaptive.record_advice(control, config.sim.adaptive, mine,
+                                        status="expired" if reason == "ttl" else "discarded" if reason else "emitted",
+                                        reason=reason, clock=clock)
+        if receipt is None:
+            reason = "invalid_advice_identity"
+        elif receipt.state != "emitted":
+            reason = reason or "ttl"
+        for previous in pending_list:
+            if previous is not mine and previous.get("conversation_id") == conversation_id:
+                adaptive.record_advice(control, config.sim.adaptive, previous, status="discarded", reason="superseded", clock=clock)
+        store.conn.execute("BEGIN IMMEDIATE")
+        try:
+            _put(store, SIM_PENDING_META, rest)
+            if reason == "stale_goal":
+                counters = sim_counters(store)
+                counters["focus_stale_drops"] += 1
+                _put(store, _SIM_COUNTERS_META, counters)
+            adaptive.put_control(store, control, config.sim.adaptive)
+            store.conn.commit()
+        except BaseException:
+            store.conn.rollback()
+            raise
+        if reason:
+            write_state(store, conversation_id, "skipped", reason=reason,
+                        delivery_drop_reason=reason, delivery_drop_tick=tick)
+            _record_advisory_discard(mine, reason="superseded" if reason == "stale_goal" else "stale", source="hook")
             return None
 
     injection = AttentionInjection(
-        id=f"sim:{conversation_id}",
+        id=f"sim:{conversation_id}:{mine['review_id']}",
         title="Sim (supervisory)",
         message=_compose_sim_message(mine),
         reason=mine.get("basis", ""),
         confidence=float(mine.get("rating", 0.0)),
+        review_id=mine["review_id"],
     )
 
     if config.sim.deposit_pheromone:
@@ -1388,6 +1510,8 @@ def format_sim_injection(
     if not injection or not injection.message:
         return []
     note = injection.message.strip()
+    if injection.id.startswith("sim:") and injection.review_id:
+        note += f" [advice_id={injection.id}]"
     if display == "quiet":
         # Agent-facing and invisible to the user. Framed as a CONSIDERATION to weigh
         # (a guess that may be wrong), not a verdict — so it prompts the agent to

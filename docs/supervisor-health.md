@@ -369,3 +369,43 @@ snapshot and counts are preserved. Set `sim.backend` to `api`, `antigravity`,
 `codex`, or `claude` to switch back. Set `sim.enabled` to `false` at the same scope
 to disable reviews. Adding Ollama support does not change an existing backend
 selection.
+
+
+## Adaptive cadence and finite controls
+
+Adaptive scheduling is optional and uses the existing bounded review queue. Set
+`sim.adaptive.enabled: true` in trusted user configuration to enable it. Quiet
+results increase intervals after hysteresis; meaningful observations can bring
+reviews forward to the minimum interval. Actual provider failures open a
+store-local cooldown. Missing configuration and exhausted budgets do not count
+as provider failures. No idle timer creates review work.
+
+Controls select the current graph through the usual `--data-dir` or profile flags.
+Choose a conversation or explicitly choose the whole store:
+
+```sh
+kin sim attention --conversation-id SESSION --duration-seconds 600
+kin sim backoff --store --duration-seconds 1800
+kin sim clear-control --conversation-id SESSION
+kin sim control-status --conversation-id SESSION --json
+kin sim ack --conversation-id SESSION --review-id REVIEW
+```
+
+The matching local MCP tools are `sim_attention`, `sim_backoff`,
+`sim_clear_control`, `sim_control_status`, and `sim_ack`. Store-wide mutations
+require `store_scope=true`; otherwise provide `conversation_id`. Durations must
+be positive integer seconds and cannot exceed the configured maximum (24 hours
+by default). Backoff wins over attention and affects only its selected scope.
+Controls never enable a disabled provider or override privacy and budget gates.
+Queued work retains its provider/model selection while live limits may tighten.
+
+Advice expires after 15 minutes by default. Generated, emitted, acknowledged,
+expired, and discarded receipts are distinct. Delivery includes an exact advice
+identity; acknowledge only an emitted review using its conversation and review
+ID. A later user turn is not an acknowledgment. Status exposes timing and receipt
+metadata, never transcript text, goals, provider commands, or credentials.
+
+Busy prompt hooks skip within a bounded lock deadline and report degraded health.
+Cron isolates each profile/project failure; registered projects receive bounded
+queue maintenance without the broader personal-store ingestion scans. A provider
+call already in progress can outlast a pass's soft time budget by its own timeout.

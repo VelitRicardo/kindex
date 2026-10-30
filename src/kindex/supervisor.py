@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
+import time
 
 from . import platform_io
 from .platform_io import open_nofollow
@@ -46,17 +48,79 @@ def session_key(scope: dict) -> str:
         [str(Path(project).resolve()), scope.get("agent", ""), sid]).encode()).hexdigest()
 
 
+class SupervisorLockBusy(BlockingIOError):
+    """A hook exhausted its shared advisory-lock acquisition allowance."""
+
+
+_hook_lock_state = threading.local()
+
+
 @contextmanager
-def store_lock(store, name: str, *, blocking: bool = True):
-    """OS releases the lock on worker exit; no stale sentinel or secret file."""
+def store_lock(store, name: str, *, blocking: bool = True, timeout: float | None = None):
+    """Workers keep single-owner locks; hooks may bound acquisition time.
+
+    Hook-only reentrancy is tied to the actual canonical file, thread and PID.
+    It permits enqueue's nested queue lock without bypassing another process.
+    """
     store.config.data_path.mkdir(parents=True, exist_ok=True)
     path = store.config.data_path / (".supervisor-" + name + ".lock")
+    key = (os.getpid(), str(path.resolve()))
+    held = getattr(_hook_lock_state, "held", None)
+    if held is not None and key in held:
+        yield
+        return
     fd = open_nofollow(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        platform_io.lock(fd, blocking=blocking)
-        yield
+        if timeout is None or not blocking:
+            platform_io.lock(fd, blocking=blocking)
+        else:
+            deadline = time.monotonic() + max(0, timeout)
+            while True:
+                try:
+                    platform_io.lock(fd, blocking=False)
+                    break
+                except BlockingIOError as error:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise SupervisorLockBusy("supervisor lock busy") from error
+                    time.sleep(min(0.001, remaining))
+        if held is not None:
+            held.add(key)
+        try:
+            yield
+        finally:
+            if held is not None:
+                held.discard(key)
     finally:
         os.close(fd)
+
+
+@contextmanager
+def _hook_state_locks(store, conversation: str, timeout: float = 0.05):
+    # Both locks are acquired before any queue pop, state write or worker spawn.
+    # A single deadline prevents two contended locks doubling the hook delay.
+    previous = getattr(_hook_lock_state, "held", None)
+    _hook_lock_state.held = set() if previous is None else previous
+    deadline = time.monotonic() + min(0.05, max(0, timeout))
+    try:
+        with store_lock(store, "session-" + conversation.split(":")[-1],
+                        timeout=max(0, deadline - time.monotonic())):
+            with store_lock(store, "queue", timeout=max(0, deadline - time.monotonic())):
+                yield
+    finally:
+        _hook_lock_state.held = previous
+
+
+def _lock_busy_result(config, diagnostics: dict) -> dict:
+    # Health's SQLite writer can itself wait ten seconds. The existing degraded
+    # ledger uses an append and nonblocking cap lock, preserving the hook bound.
+    try:
+        from .config import record_degraded
+        record_degraded("supervisor_lock_busy", SupervisorLockBusy("supervisor lock busy"), config=config)
+    except Exception:
+        pass
+    return {"ok": True, "context": "", "supervisor": {
+        **diagnostics, "state": "skipped", "reason": "lock_busy"}}
 
 
 def config_snapshot(config) -> dict:
@@ -256,16 +320,16 @@ def record_hook_receipt(scope: dict, launch_paths=(), **details) -> None:
 
 def supervisor_tick(store, config, scope: dict, *, text: str, goal=None, initial_goal=None,
                     event_id=None, transcript_path=None, deliver: bool = True,
-                    text_is_goal: bool = True, launch_paths=()) -> dict:
+                    text_is_goal: bool = True, launch_paths=(), event: str = "activity") -> dict:
     if os.environ.get("KINDEX_REVIEW_WORKER") == "1":
         return {"ok": True, "context": "", "supervisor": {"state": "skipped", "reason": "review_worker"}}
     from .sim import (enqueue_sim_review, pop_pending_sim_injection, format_sim_injection,
                       sim_effective_enabled, spawn_background_drain)
     conversation = session_key(scope)
-    record_hook_receipt(scope, launch_paths)
     diagnostics = {"data_dir": str(config.data_path), "db_path": str(store.db_path),
                    "session_id": scope["session_id"], "agent": scope.get("agent", "")}
     if not sim_effective_enabled(store, config):
+        record_hook_receipt(scope, launch_paths)
         return {"ok": True, "context": "", "supervisor": {**diagnostics, "state": "disabled"}}
     trace, original = "", ""
     if transcript_path:
@@ -281,41 +345,47 @@ def supervisor_tick(store, config, scope: dict, *, text: str, goal=None, initial
     incoming = (trace + "\n" + clean).strip()[-config.sim.window_chars:]
     digest = hashlib.sha256(json.dumps([event_id, incoming], sort_keys=True).encode()).hexdigest()
     queued = False
-    with store_lock(store, "session-" + conversation.split(":")[-1]):
-        state = read_state(store, conversation)
-        previous = state.get("window", "")
-        window = incoming if trace or (previous and previous in incoming) else (previous + "\n" + incoming).strip()
-        window = window[-config.sim.window_chars:]
-        intent = redact_text(str(goal or state.get("goal") or initial_goal or original or
-                                 (clean if text_is_goal else "")))[:2000]
-        duplicate = state.get("event_digest") == digest
-        tick = int(state.get("tick", 0)) + (0 if duplicate else 1)
-        with store_lock(store, "queue"):
-            injection = pop_pending_sim_injection(store, config, conversation, window, tick=tick, intent=intent) if deliver else None
-        lines = format_sim_injection(injection, display=config.sim.display)
-        warning, allowance = _allowance_notice(store, config, conversation, deliver=deliver)
-        diagnostics["allowance"] = allowance
-        if warning:
-            lines.append(warning)
-        # Status diagnostics contain no transcript, goal, provider key, or command.
-        if not duplicate:
-            write_state(store, conversation, None, tick=tick,
-                        event_digest=digest, window=window, goal=intent)
-            unavailable = preflight(config, conversation)
-            if unavailable:
-                write_state(store, conversation, unavailable[0], reason=unavailable[1])
-                record_health(scope, "review", state=unavailable[0], source="hook",
-                              reason="budget_exhausted" if unavailable[0] == "budget_exhausted" else "llm_unavailable",
-                              event_id=digest + ":preflight:" + unavailable[0])
-            else:
-                queued = enqueue_sim_review(store, config, conversation, window, tick=tick, intent=intent, scope=scope)
-        if injection:
-            write_state(store, conversation, "delivered", reason="advisory", delivered_tick=tick)
-        latest = read_state(store, conversation)
-        if (latest.get("state") == "skipped" and latest.get("reason") in {"cadence", "banter"}
-                and latest.get("delivery_drop_tick") == tick):
-            write_state(store, conversation, "skipped", reason=latest["delivery_drop_reason"])
+    try:
+        with _hook_state_locks(store, conversation):
+            record_hook_receipt(scope, launch_paths)
+            state = read_state(store, conversation)
+            previous = state.get("window", "")
+            window = incoming if trace or (previous and previous in incoming) else (previous + "\n" + incoming).strip()
+            window = window[-config.sim.window_chars:]
+            intent = redact_text(str(goal or state.get("goal") or initial_goal or original or
+                                     (clean if text_is_goal else "")))[:2000]
+            observed = bool(incoming.strip())
+            duplicate = state.get("event_digest") == digest or not observed
+            review_event = "goal_changed" if goal and str(goal).strip() != str(state.get("goal") or "").strip() else event
+            tick = int(state.get("tick", 0)) + (0 if duplicate else 1)
+            with store_lock(store, "queue"):
+                injection = pop_pending_sim_injection(store, config, conversation, window, tick=tick, intent=intent) if deliver else None
+            lines = format_sim_injection(injection, display=config.sim.display)
+            warning, allowance = _allowance_notice(store, config, conversation, deliver=deliver)
+            diagnostics["allowance"] = allowance
+            if warning:
+                lines.append(warning)
+            # Status diagnostics contain no transcript, goal, provider key, or command.
+            if not duplicate:
+                write_state(store, conversation, None, tick=tick,
+                            event_digest=digest, window=window, goal=intent)
+                unavailable = preflight(config, conversation)
+                if unavailable:
+                    write_state(store, conversation, unavailable[0], reason=unavailable[1])
+                    record_health(scope, "review", state=unavailable[0], source="hook",
+                                  reason="budget_exhausted" if unavailable[0] == "budget_exhausted" else "llm_unavailable",
+                                  event_id=digest + ":preflight:" + unavailable[0])
+                else:
+                    queued = enqueue_sim_review(store, config, conversation, window, tick=tick, intent=intent, scope=scope, event=review_event)
+            if injection:
+                write_state(store, conversation, "delivered", reason="advisory", delivered_tick=tick)
             latest = read_state(store, conversation)
+            if (latest.get("state") == "skipped" and latest.get("reason") in {"cadence", "banter"}
+                    and latest.get("delivery_drop_tick") == tick):
+                write_state(store, conversation, "skipped", reason=latest["delivery_drop_reason"])
+                latest = read_state(store, conversation)
+    except SupervisorLockBusy:
+        return _lock_busy_result(config, diagnostics)
     if queued and config.sim.drain_on_tick:
         if not spawn_background_drain(config):
             write_state(store, conversation, "failed", reason="worker_unavailable")
@@ -426,6 +496,7 @@ def hook_request(payload: dict, adapter: str, *, config=None, project_path=None)
         return supervisor_tick(store, cfg, scope, text=text,
                                goal=payload.get("goal") or payload.get("focus"), initial_goal=payload.get("initial_goal"),
                                event_id=event_id, deliver=deliver,
+                               event="tool_error" if payload.get("isError") is True or payload.get("tool_error") is True else str(payload.get("event") or "activity"),
                                text_is_goal=adapter != "cursor" or cursor_event == "beforeSubmitPrompt",
                                transcript_path=payload.get("transcript_path") or payload.get("transcriptPath"),
                                launch_paths=launch_paths)

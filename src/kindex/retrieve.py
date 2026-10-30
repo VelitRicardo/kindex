@@ -215,7 +215,7 @@ def _recency_score(store: Store, node_ids: set[str], now: datetime | None = None
     results = []
     now = now or datetime.now()
     for nid in node_ids:
-        node = store.get_node(nid)
+        node = store.peek_node(nid)  # scoring a candidate is not a use of it
         if not node:
             continue
         ts = node.get("updated_at") or node.get("created_at")
@@ -235,7 +235,7 @@ def _node_weight_scores(store: Store, node_ids: set[str]) -> list[tuple[str, flo
     """Score nodes by their stored weight (already [0, 1] range)."""
     results = []
     for nid in node_ids:
-        node = store.get_node(nid)
+        node = store.peek_node(nid)  # scoring a candidate is not a use of it
         if node:
             results.append((nid, node.get("weight", 0.5)))
     return results
@@ -357,6 +357,7 @@ def hybrid_search(
     evaluation_time: str | datetime | None = None,
     grounding: dict | None = None,
     recency_time: datetime | None = None,
+    node_filter: Callable[[dict], bool] | None = None,
 ) -> list[dict]:
     """Hybrid search combining FTS5 + graph expansion + vector search.
 
@@ -417,6 +418,8 @@ def hybrid_search(
         trust_omitted.setdefault(str(node.get("id")), reason)
 
     def candidate_eligible(node):
+        if node_filter is not None and not node_filter(node):
+            return False
         extra = node.get("extra")
         imported = isinstance(extra, dict) and isinstance(extra.get("kinbase"), dict)
         # A legacy unruled node takes its place in the window as it always
@@ -513,6 +516,16 @@ def hybrid_search(
         except Exception:
             pass
 
+    # A supplied scope applies to every candidate channel, including graph
+    # neighbours and vectors that did not pass through FTS admission.
+    if node_filter is not None:
+        def scoped_ranks(ranked):
+            nodes = store.peek_nodes([nid for nid, _ in ranked])
+            return [(nid, score) for nid, score in ranked
+                    if nid in nodes and node_filter(nodes[nid])]
+        graph_ranked = scoped_ranks(graph_ranked)
+        vec_ranked = scoped_ranks(vec_ranked)
+
     if grounding is not None and verdict is not None:
         grounding["verdict"] = verdict
 
@@ -521,11 +534,51 @@ def hybrid_search(
     cfg_weights = rcfg.ensemble_weights if rcfg else _ENSEMBLE_WEIGHTS_DEFAULT
     cfg_rrf_k = rcfg.rrf_k if rcfg else _RRF_K_DEFAULT
 
+    cue_ranked: list[tuple[str, float]] = []
+    cue_snapshot: dict[str, dict] | None = None
+    cue_config = getattr(store.config, "recall_cues", None)
+    if cue_config is not None and cue_config.enabled:
+        try:
+            from .recall_cues import GENERATOR_VERSION, cue_candidates, source_fingerprint
+
+            def cue_eligible(node):
+                return (node.get("status") not in ("archived", "superseded")
+                        and (include_expired or not node_expired(node, today=admission_today))
+                        and candidate_eligible(node))
+
+            candidates = cue_candidates(store, query, limit=cue_config.candidate_limit,
+                                        node_filter=cue_eligible)
+            if candidates:
+                # Freeze the exact source dictionaries that will be emitted.
+                # Recheck hashes after candidate acquisition, before fusion:
+                # a race removes only the stale cue contribution.
+                ids = {nid for ranks in (fts_ranked, graph_ranked, vec_ranked, candidates)
+                       for nid, _ in ranks}
+                snapshot = store.peek_nodes(sorted(ids))
+                cue_ids = [nid for nid, _ in candidates]
+                placeholders = ",".join("?" for _ in cue_ids)
+                hashes = {row["source_id"]: row for row in store.conn.execute(
+                    "SELECT source_id, source_hash, generator_version FROM recall_cue_sets "
+                    f"WHERE source_id IN ({placeholders})", cue_ids)}
+                cue_ranked = [(nid, score) for nid, score in candidates
+                              if nid in snapshot and nid in hashes
+                              and cue_eligible(snapshot[nid])
+                              and hashes[nid]["generator_version"] == GENERATOR_VERSION
+                              and hashes[nid]["source_hash"] == source_fingerprint(snapshot[nid])]
+                if cue_ranked:
+                    cue_snapshot = snapshot
+        except Exception:
+            _log.warning("Recall cue channel unavailable; ordinary retrieval retained")
+            cue_ranked = []
+            cue_snapshot = None
+
+    ordinary_ids = {nid for ranks in (fts_ranked, graph_ranked, vec_ranked) for nid, _ in ranks}
+
     # Merge results
     if ranking == "ensemble":
         # Collect all candidate node IDs for weight/recency scoring
         all_ids: set[str] = set()
-        for ranked in (fts_ranked, graph_ranked, vec_ranked):
+        for ranked in (fts_ranked, graph_ranked, vec_ranked, cue_ranked):
             all_ids.update(nid for nid, _ in ranked)
 
         sources: dict[str, list[tuple[str, float]]] = {"fts": fts_ranked}
@@ -569,6 +622,12 @@ def hybrid_search(
             except Exception:
                 pass
 
+        if cue_ranked:
+            baseline_sources = {name: [(nid, score) for nid, score in ranks if nid in ordinary_ids]
+                                for name, ranks in sources.items()}
+            baseline = _weighted_ensemble(baseline_sources, weights=cfg_weights)
+            sources["recall_cues"] = cue_ranked
+            cfg_weights = {**cfg_weights, "recall_cues": cue_config.rank_weight}
         merged = _weighted_ensemble(sources, weights=cfg_weights)
     else:
         # Legacy RRF fallback
@@ -578,6 +637,17 @@ def hybrid_search(
         if vec_ranked:
             ranked_lists.append(vec_ranked)
         merged = _rrf_merge(*ranked_lists, k=cfg_rrf_k) if len(ranked_lists) > 1 else fts_ranked
+        if cue_ranked:
+            baseline = merged
+            totals = dict(_rrf_merge(*ranked_lists, k=cfg_rrf_k))
+            for rank, (nid, _) in enumerate(cue_ranked, 1):
+                totals[nid] = totals.get(nid, 0.0) + cue_config.rank_weight / (cfg_rrf_k + rank)
+            merged = list(totals.items())
+
+    if cue_ranked:
+        baseline_order = {nid: rank for rank, (nid, _) in enumerate(baseline)}
+        merged.sort(key=lambda item: (-item[1], baseline_order.get(item[0], len(baseline_order)),
+                                      item[0]))
 
     # Standing is precedence among the query's own matches: a ratified
     # matching fact outranks any number of present matching observations.
@@ -608,7 +678,7 @@ def hybrid_search(
         if len(results) >= top_k:
             break
         try:
-            node = store.get_node(nid)
+            node = (cue_snapshot.get(nid) if cue_snapshot is not None else store.get_node(nid))
             orig = node
             hops = 0
             while node is not None and node.get("status") == "superseded":
@@ -634,6 +704,8 @@ def hybrid_search(
                 node = store.get_node(successor)
                 hops += 1
             if node is None:
+                continue
+            if node_filter is not None and not node_filter(node):
                 continue
             if (trusted_only or not include_expired) and node_expired(
                 node, today=trusted_today if trusted_only else None
@@ -665,9 +737,11 @@ def hybrid_search(
                 include_expired=include_expired and not trusted_only,
                 trusted_at=trusted_at if trusted_only else None,
                 trusted_today=trusted_today,
+                **({"node_filter": node_filter} if node_filter is not None else {}),
             )
             from .kinbase import attach_unknowns
-            attach_unknowns(store, node)
+            attach_unknowns(store, node,
+                            **({"node_filter": node_filter} if node_filter is not None else {}))
             results.append(node)
         except Exception:
             continue  # one malformed candidate never zeroes retrieval
@@ -692,6 +766,8 @@ def hybrid_search(
                 unfenced = store.fts_search(query, limit=10000,
                                             include_archived=True)
                 for r in unfenced:
+                    if node_filter is not None and not node_filter(r):
+                        continue
                     if r["id"] in fenced_nodes:
                         continue
                     if not (include_expired or not node_expired(r)):
@@ -1673,6 +1749,7 @@ def visible_neighbours(
     trusted_today: str | None = None,
     adapter: str | None = None,
     limit: int = 5,
+    node_filter: Callable[[dict], bool] | None = None,
 ) -> list[dict]:
     """The first ``limit`` edges whose target a reader may be shown: live,
     unexpired, in the client's scope, and trusted when trust is required.
@@ -1690,6 +1767,8 @@ def visible_neighbours(
         if row is None:
             continue
         target = store._row_to_dict(row)
+        if node_filter is not None and not node_filter(target):
+            continue
         if not include_archived and target.get("status") in ("archived", "superseded"):
             continue
         if not include_expired and node_expired(target, today=trusted_today):

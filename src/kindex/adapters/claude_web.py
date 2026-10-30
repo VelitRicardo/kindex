@@ -86,7 +86,7 @@ class ClaudeWebAdapter:
         index = {}
         if index_path.exists():
             try:
-                index = json.loads(index_path.read_text())
+                index = json.loads(index_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 pass
 
@@ -116,7 +116,7 @@ class ClaudeWebAdapter:
             existing = store.get_node(node_id)
 
             try:
-                conv = json.loads(jf.read_text())
+                conv = json.loads(jf.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError) as e:
                 errors.append(f"{uuid}: {e}")
                 continue

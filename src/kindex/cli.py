@@ -892,7 +892,7 @@ def cmd_learn(args):
             # Mark as processed
             meta["processed"] = True
             from .vault import serialize_frontmatter
-            f.write_text(serialize_frontmatter(meta, body))
+            f.write_text(serialize_frontmatter(meta, body), encoding="utf-8")
 
         print(f"\nProcessed inbox: {count} new node(s).")
     else:
@@ -2010,7 +2010,12 @@ def cmd_export(args):
         if output_path:
             path = Path(output_path)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(output + "\n")
+            if path.name == "code-map.json" and path.parent.name == ".kin":
+                from .setup import git_repo_root, install_kin_text_attributes
+                root = git_repo_root(path.parent)
+                if root is not None and path.parent.resolve() == (root / ".kin").resolve():
+                    install_kin_text_attributes(root)
+            path.write_text(output + "\n", encoding="utf-8", newline="\n")
             print(f"Wrote {path}", file=sys.stderr)
         else:
             print(output)
@@ -3269,6 +3274,10 @@ def cmd_index(args):
         print(f"Error: {e}", file=sys.stderr)
         store.close()
         sys.exit(1)
+    from .setup import install_kin_text_attributes
+    root = git_repo_root(output_dir)
+    if root is not None and output_dir.resolve() == root.resolve():
+        install_kin_text_attributes(root)
     print(f"Wrote {path}")
     print(f"  ({path.stat().st_size} bytes)")
 
@@ -3310,7 +3319,7 @@ def cmd_merge_kin(args):
     )
     if merged is None:
         sys.exit(1)
-    Path(args.ours).write_text(merged)
+    Path(args.ours).write_text(merged, encoding="utf-8", newline="\n")
     print(f"merge-kin: resolved {args.path}", file=sys.stderr)
 
 
@@ -3526,7 +3535,7 @@ def _profile_create(args):
             sys.exit(1)
 
     # Round-trip the existing yaml: load, modify, dump — unknown keys survive.
-    data = (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
+    data = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}) if path.exists() else {}
     profiles = data.get("profiles") or {}
     if name in profiles:
         print(f"Error: profile '{name}' already exists in {path}", file=sys.stderr)
@@ -3540,7 +3549,7 @@ def _profile_create(args):
         data["default_profile"] = name
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+        path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False), encoding="utf-8")
     except (FileNotFoundError, OSError) as e:
         print(f"Error: cannot write config to {path}: {e}", file=sys.stderr)
         sys.exit(1)
@@ -3588,6 +3597,21 @@ def _profile_create(args):
 
 
 # ── embed ─────────────────────────────────────────────────────────────
+
+def cmd_recall_cues(args):
+    """Explicit offline administration; never calls an embedding/LLM provider."""
+    from .recall_cues import build_cues, cue_status
+
+    store = _store(args)
+    if args.recall_cues_action == "build":
+        result = build_cues(store, node_ids=args.node_ids, limit=args.limit)
+    else:
+        result = cue_status(store)
+    if args.json:
+        print(_dumps(result, indent=2))
+    else:
+        print("; ".join(f"{name}: {value}" for name, value in result.items()))
+
 
 def cmd_embed(args):
     """Index or reindex nodes for vector similarity search.
@@ -3793,7 +3817,7 @@ def cmd_ask(args):
     try:
         team = None
         if getattr(args, "context_file", None):
-            team = Path(args.context_file).read_text().splitlines()
+            team = Path(args.context_file).read_text(encoding="utf-8").splitlines()
         # In a terminal the answer is shown sentence by sentence as it is written.
         stream = (lambda text: print(text, end="", flush=True)) if sys.stdout.isatty() else None
         result = answer_question(store, question, cfg, ledger, as_of=getattr(args, "as_of", None), team=team,
@@ -4123,7 +4147,7 @@ def cmd_import_graph(args):
     dry_run = getattr(args, "dry_run", False)
     try:
         filepath = Path(args.filepath)
-        text = filepath.read_text()
+        text = filepath.read_text(encoding="utf-8")
         if filepath.suffix == ".jsonl" or args.format == "jsonl":
             items = [json.loads(line) for line in text.split("\n") if line.strip()]
         else:
@@ -4222,6 +4246,8 @@ def cmd_cron(args):
                 print(f"  Cron interval: {repack.get('previous', '?')}s -> {interval}s (adaptive)")
             elif action == "disabled":
                 print(f"  Cron interval: disabled (no pending reminders)")
+        for step, error in sorted(results.get("errors", {}).items()):
+            print(f"  {step} failed: {error}")
 
 
 # ── dream ─────────────────────────────────────────────────────────────
@@ -4231,7 +4257,7 @@ def cmd_digest(args):
     With --claims, conversations digested before `conversations.claims` was on are given
     turn-level claims in place of their facts (without digesting them again); claims the
     digest pass just read are not read a second time."""
-    from .conversations import backfill_claims, backfill_digests, build_profiles
+    from .conversations import backfill_claims, backfill_digests, build_profiles, profiles_enabled
     from .vectors import drain_embedding_queue
 
     store = _store(args)
@@ -4243,7 +4269,7 @@ def cmd_digest(args):
         n = backfill_digests(store, cfg, ledger)
         if getattr(args, "claims", False):
             k = backfill_claims(store, cfg, ledger)
-            if k:
+            if k and profiles_enabled(cfg):
                 build_profiles(store, cfg, ledger)
             print(f"Gave {k} conversation(s) turn-level claims.")
         drain_embedding_queue(store, cfg, max_jobs=10**9, time_budget=10**9, report_coverage=False)
@@ -4969,7 +4995,7 @@ def cmd_mode(args):
             store.close()
             return
         try:
-            with open(fpath) as f:
+            with open(fpath, encoding="utf-8") as f:
                 artifact = json.load(f)
             mode_id = import_mode(store, artifact)
             print(f"Imported mode: {artifact.get('name', '?')} ({mode_id})")
@@ -5871,9 +5897,37 @@ def cmd_attention_hook(args):
 
 def cmd_sim(args):
     """Runtime controls for the Sim supervisory check-in."""
-    store = _store(args)
-    cfg = _config(args)
     action = getattr(args, "sim_action", "status")
+    conversation = getattr(args, "conversation_id", None)
+    explicit_store = getattr(args, "store_scope", False)
+    from .adaptive_sim import _scope
+    _scope(conversation)
+    if action in {"attention", "backoff", "clear-control"} and (bool(conversation) == bool(explicit_store)):
+        raise ValueError("exactly one of --store or --conversation-id is required")
+    if action == "ack" and (not conversation or explicit_store or not getattr(args, "review_id", None)):
+        raise ValueError("ack requires --conversation-id and --review-id")
+    cfg = _config(args)
+    if action in {"attention", "backoff"}:
+        duration = getattr(args, "duration_seconds", None)
+        if type(duration) is not int or not 1 <= duration <= cfg.sim.adaptive.max_override_seconds:
+            raise ValueError("invalid_duration_seconds")
+    store = _store(args)
+    if action in {"attention", "backoff", "clear-control", "ack", "control-status"}:
+        from . import adaptive_sim as adaptive
+        try:
+            if action in {"attention", "backoff"}:
+                result = adaptive.set_override(store, cfg, mode=action, duration_seconds=args.duration_seconds,
+                                               conversation_id=conversation)
+            elif action == "clear-control":
+                result = adaptive.clear_override(store, conversation_id=conversation)
+            elif action == "ack":
+                result = adaptive.acknowledge_advice(store, conversation_id=conversation, review_id=args.review_id)
+            else:
+                result = adaptive.control_status(store, cfg, conversation_id=conversation)
+            print(_dumps(result, indent=2))
+        finally:
+            store.close()
+        return
 
     from .sim import (
         call_sim,
@@ -5942,8 +5996,9 @@ def cmd_sim(args):
             from .budget import BudgetLedger
             ledger = BudgetLedger(cfg.ledger_path, cfg.budget)
         grounding = build_sim_grounding(store, text, cfg)
-        result, acct = call_sim(
-            cfg, ledger, text, "sim-check", client=None,
+        from .sim import controlled_sim_check
+        result, acct = controlled_sim_check(
+            store, cfg, ledger, text, conversation or "sim-check", client=None,
             guidance=get_sim_guidance(store),
             grounding=grounding,
             intent=_capture_intent(store),
@@ -6115,6 +6170,85 @@ def cmd_attention(args):
     store.close()
 
 
+def cmd_context_query(args):
+    """Prepare only from one explicitly selected read-only graph."""
+    from .query_context import (QueryContextRequest, open_query_store,
+                                prepare_query_context, resolve_client_scope)
+    from .sessions import normalize_project_path
+    store = None
+    try:
+        config = _config(args)
+        project = normalize_project_path(str(config._project_path or os.getcwd()))
+        descriptor = resolve_client_scope(explicit=args.client, configured=(
+            os.environ.get("KIN_CLIENT"), os.environ.get("KINDEX_CLIENT")))
+        request = QueryContextRequest(
+            query=args.query, project_path=project, client_scope=descriptor,
+            retrieval_max_bytes=args.source_bytes, top_k=args.top_k,
+            evaluation_time=args.at, include_handoff=args.include_handoff,
+            evidence_session_id=args.evidence_session_id,
+            handoff_selection=args.selection, evidence_ids=args.evidence_id,
+            handoff_max_bytes=args.handoff_bytes, action=args.action,
+        )
+        # Validate request before opening or searching any graph. The helper
+        # suppresses native stamping only while requiring the actual stamp.
+        store = open_query_store(config)
+        arguments = {key: getattr(request, key) for key in QueryContextRequest.model_fields}
+        print(_dumps(prepare_query_context(store, **arguments), ensure_ascii=True))
+    except sqlite3.Error:
+        print(_dumps({"error": "Query context is unavailable"}, ensure_ascii=True), file=sys.stderr)
+        raise SystemExit(2)
+    except ValueError as error:
+        print(_dumps({"error": safe_error(error)}, ensure_ascii=True), file=sys.stderr)
+        raise SystemExit(2)
+    finally:
+        if store is not None:
+            store.close()
+
+
+def cmd_evidence(args):
+    """Use only the graph selected by the existing CLI config adapter."""
+    from .evidence import (source_snapshot, retain_evidence, inspect_evidence,
+                           project_evidence, _selected_ref)
+    from .sessions import normalize_project_path
+    store = None
+    # Match native CLI session start/resume ownership, including subdirectories.
+    project = os.getcwd()
+    try:
+        store = _store(args)
+        action = args.evidence_command
+        if action == "snapshot":
+            result = source_snapshot(store, args.node, project_path=project)
+        elif action == "retain":
+            # The locator is selected locally; caller digests still detect races.
+            source_ref = _selected_ref(store, args.node, normalize_project_path(project))
+            result = retain_evidence(
+                store, session_id=args.session_id, project_path=project,
+                source_ref=source_ref,
+                expected_source_sha256=args.expected_source_sha256,
+                expected_metadata_sha256=args.expected_metadata_sha256,
+                start_byte=args.start_byte, end_byte=args.end_byte,
+                operation_id=args.operation_id, cue=args.cue, kind=args.kind,
+                action=args.action,
+            )
+        elif action == "inspect":
+            result = inspect_evidence(store, session_id=args.session_id, project_path=project)
+        else:
+            result = project_evidence(
+                store, session_id=args.session_id, project_path=project,
+                action=args.action, max_aux_bytes=args.max_aux_bytes,
+            )
+        print(_dumps(result, ensure_ascii=True))
+    except sqlite3.Error:
+        print(_dumps({"error": "Evidence is unavailable"}, ensure_ascii=True), file=sys.stderr)
+        raise SystemExit(2)
+    except (ValueError, KeyError, UnicodeError) as error:
+        print(_dumps({"error": str(error)}, ensure_ascii=True), file=sys.stderr)
+        raise SystemExit(2)
+    finally:
+        if store is not None:
+            store.close()
+
+
 def cmd_tag(args):
     """Session tag management — named work context handles."""
     store = _store(args)
@@ -6228,6 +6362,15 @@ def cmd_tag(args):
         if tokens is None:
             tokens = 1500
         try:
+            if getattr(args, "include_evidence", False):
+                # Validate the opt-in request before native resume changes state.
+                format_resume_context(
+                    store, tag_name, max_tokens=0, project_path=os.getcwd(),
+                    include_evidence=True,
+                    evidence_session_id=getattr(args, "evidence_session_id", None),
+                    evidence_max_bytes=getattr(args, "evidence_max_bytes", 4096),
+                    evidence_action=getattr(args, "evidence_action", ""),
+                )
             resume_tag(store, tag_name, project_path=os.getcwd())
             block = format_resume_context(
                 store,
@@ -6235,6 +6378,10 @@ def cmd_tag(args):
                 max_tokens=tokens,
                 evaluation_time=operation_now(),
                 project_path=os.getcwd(),
+                include_evidence=getattr(args, "include_evidence", False),
+                evidence_session_id=getattr(args, "evidence_session_id", None),
+                evidence_max_bytes=getattr(args, "evidence_max_bytes", 4096),
+                evidence_action=getattr(args, "evidence_action", ""),
             )
             print(block)
         except ValueError as e:
@@ -6358,7 +6505,7 @@ def cmd_integration_doctor(args):
         from .claude_install import QUALIFIED_CLAUDE_VERSION
         result["qualified_claude_version"] = QUALIFIED_CLAUDE_VERSION
         record = cfg.claude_path / "kindex-adapter.json"
-        result["adapter"] = json.loads(record.read_text()) if record.exists() else {"mode": "unmanaged"}
+        result["adapter"] = json.loads(record.read_text(encoding="utf-8")) if record.exists() else {"mode": "unmanaged"}
     except ConfigResolutionError:
         raise  # a command: main() prints the remedy and exits 2
     except Exception as error:
@@ -6471,7 +6618,11 @@ def cmd_setup_cron(args):
         # reminder delivery must never wait behind a slow maintenance run.
         if method == "launchd":
             from .setup import install_launchd, install_reminder_daemon
-            actions = install_launchd(cfg, dry_run=dry_run)
+            try:
+                actions = install_launchd(cfg, dry_run=dry_run)
+            except ValueError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                raise SystemExit(2) from exc
             actions += install_reminder_daemon(cfg, dry_run=dry_run)
         else:
             from .setup import install_crontab
@@ -6492,16 +6643,16 @@ def cmd_setup_claude_md(args):
     if getattr(args, "install", False):
         claude_md = platform_io.home() / ".claude" / "CLAUDE.md"
         if claude_md.exists():
-            existing = claude_md.read_text()
+            existing = claude_md.read_text(encoding="utf-8")
             if any(marker in existing for marker in _KINDEX_BLOCK_MARKERS):
                 print("Kindex directives already present in CLAUDE.md")
                 return
-            with open(claude_md, "a") as f:
+            with open(claude_md, "a", encoding="utf-8", newline="\n") as f:
                 f.write("\n" + block)
             print(f"Appended kindex directives to {claude_md}")
         else:
             claude_md.parent.mkdir(parents=True, exist_ok=True)
-            claude_md.write_text(block)
+            claude_md.write_text(block, encoding="utf-8", newline="\n")
             print(f"Created {claude_md} with kindex directives")
     else:
         print(block)
@@ -6520,16 +6671,16 @@ def cmd_setup_agents_md(args):
         cfg = _config(args)
         agents_md = cfg.codex_path / "AGENTS.md" if getattr(args, "global_install", False) else Path.cwd() / "AGENTS.md"
         if agents_md.exists():
-            existing = agents_md.read_text()
+            existing = agents_md.read_text(encoding="utf-8")
             if any(marker in existing for marker in _KINDEX_BLOCK_MARKERS):
                 print(f"Kindex directives already present in {agents_md}")
                 return
-            with open(agents_md, "a") as f:
+            with open(agents_md, "a", encoding="utf-8", newline="\n") as f:
                 f.write("\n" + block)
             print(f"Appended kindex directives to {agents_md}")
         else:
             agents_md.parent.mkdir(parents=True, exist_ok=True)
-            agents_md.write_text(block)
+            agents_md.write_text(block, encoding="utf-8", newline="\n")
             print(f"Created {agents_md} with kindex directives")
     else:
         print(block)
@@ -6563,16 +6714,16 @@ def cmd_setup_gemini_md(args):
         cfg = _config(args)
         gemini_md = cfg.gemini_path / "GEMINI.md"
         if gemini_md.exists():
-            existing = gemini_md.read_text()
+            existing = gemini_md.read_text(encoding="utf-8")
             if any(marker in existing for marker in _KINDEX_BLOCK_MARKERS):
                 print(f"Kindex directives already present in {gemini_md}")
                 return
-            with open(gemini_md, "a") as f:
+            with open(gemini_md, "a", encoding="utf-8", newline="\n") as f:
                 f.write("\n" + block)
             print(f"Appended kindex directives to {gemini_md}")
         else:
             gemini_md.parent.mkdir(parents=True, exist_ok=True)
-            gemini_md.write_text(block)
+            gemini_md.write_text(block, encoding="utf-8", newline="\n")
             print(f"Created {gemini_md} with kindex directives")
     else:
         print(block)
@@ -6702,7 +6853,7 @@ def cmd_setup_cursor_rules(args):
             print(f"Kindex Cursor rule already present at {rule_path}")
             return
         rule_path.parent.mkdir(parents=True, exist_ok=True)
-        rule_path.write_text(block)
+        rule_path.write_text(block, encoding="utf-8", newline="\n")
         print(f"Created {rule_path} with kindex directives")
     else:
         print(block)
@@ -7173,20 +7324,71 @@ def _config_write(key: str, value: str, config_path: str | None = None,
 
     # Load existing or start fresh
     if path.exists():
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     else:
         data = {}
 
     _dotset(data, key, _coerce_value(value))
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+        path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False), encoding="utf-8")
     except (FileNotFoundError, OSError) as e:
         print(f"Error: cannot write config to {path}: {e}", file=sys.stderr)
         sys.exit(1)
 
 
 # ── parser ─────────────────────────────────────────────────────────────
+
+def cmd_practical_memory(args):
+    """Explicit practical-memory lane; read commands never open writable storage."""
+    from . import practical_memory
+    try:
+        request_path = Path(args.request_json)
+        if not request_path.is_absolute():
+            raise practical_memory.PracticalMemoryError("invalid_request")
+        try:
+            request = practical_memory._loads(request_path.read_bytes().decode("utf-8"))
+        except (OSError, UnicodeError):
+            raise practical_memory.PracticalMemoryError("invalid_request") from None
+        from .practical_memory_host import run_practical_memory
+        result = run_practical_memory(_config(args), args.practical_action, request,
+                                      project_path=getattr(args, "project_path", None))
+        print(practical_memory._c(result).decode("utf-8"))
+    except practical_memory.PracticalMemoryError as exc:
+        print(_dumps({"error": {"code": exc.code, "message": exc.message}}))
+        raise SystemExit(1 if exc.code == "unavailable" else 2) from None
+    except ConfigResolutionError:
+        print(_dumps({"error": {"code": "scope_mismatch", "message": "Practical memory scope is unavailable"}}))
+        raise SystemExit(2) from None
+    except (sqlite3.Error, OSError, RuntimeError):
+        print(_dumps({"error": {"code": "unavailable", "message": "Practical memory storage is unavailable"}}))
+        raise SystemExit(1) from None
+
+
+def cmd_correction_references(args):
+    """Explicit v8 host adapter; source/request data never supplies grants."""
+    from . import correction_references as references
+    try:
+        request_path = Path(args.request_json)
+        if not request_path.is_absolute():
+            raise references.ReferenceError("invalid_request")
+        try:
+            request = references._loads(request_path.read_bytes().decode("utf-8"))
+        except (OSError, UnicodeError):
+            raise references.ReferenceError("invalid_request") from None
+        from .practical_memory_host import run_correction_references
+        result = run_correction_references(_config(args), args.v8_operation, request,
+            project_path=getattr(args, "project_path", None),
+            metadata_encoding=getattr(args, "metadata_encoding", "full"),
+            incoming_later=getattr(args, "incoming_later", False), recorded_at=operation_now())
+        print(references._j(result).decode("utf-8"))
+    except references.ReferenceError as exc:
+        print(references._j({"error": {"code": exc.code, "message": "Correction reference operation is unavailable"}}).decode("utf-8"))
+        raise SystemExit(1 if exc.code == "unavailable" else 2) from None
+    except (ConfigResolutionError, sqlite3.Error, OSError, RuntimeError):
+        print(references._j({"error": {"code": "unavailable", "message": "Correction reference storage or host context is unavailable"}}).decode("utf-8"))
+        raise SystemExit(1) from None
+
 
 def _common(p):
     p.add_argument("--config", help="Explicit config file (bypasses layering)")
@@ -7203,6 +7405,36 @@ def build_parser() -> argparse.ArgumentParser:
                                 description="Knowledge graph that learns from your conversations")
     p.add_argument("--version", action="store_true")
     sub = p.add_subparsers(dest="command")
+
+    practical = sub.add_parser("practical-memory", help="Opt-in source-bound context and local receipts")
+    practical_sub = practical.add_subparsers(dest="practical_action", required=True)
+    for action in ("prepare", "persist", "index", "audit", "ack", "organize"):
+        command = practical_sub.add_parser(action)
+        command.add_argument("--request-json", required=True, help="Absolute path to a strict JSON request")
+        _common(command)
+        command.set_defaults(func=cmd_practical_memory)
+
+    for action in ("reference", "expand"):
+        command = practical_sub.add_parser(action, help="Opt-in scoped correction references")
+        command.add_argument("--request-json", required=True, help="Absolute path to strict JSON request")
+        command.add_argument("--incoming-later", action="store_true", help="Opt in to bounded incoming later notes")
+        if action == "expand":
+            command.add_argument("--metadata-encoding", choices=("full", "lossless_common"), default="full")
+        _common(command)
+        command.set_defaults(func=cmd_correction_references, v8_operation=action)
+    corrections = practical_sub.add_parser("correction", help="Explicit append-only correction declarations")
+    correction_sub = corrections.add_subparsers(dest="correction_action", required=True)
+    for action in ("add", "retire"):
+        command = correction_sub.add_parser(action)
+        command.add_argument("--request-json", required=True, help="Absolute path to strict JSON assertion/request")
+        _common(command)
+        command.set_defaults(func=cmd_correction_references, v8_operation="correction_"+action)
+    dream = practical_sub.add_parser("dream-index", help="Import a pre-query advisory index")
+    dream_sub = dream.add_subparsers(dest="dream_index_action", required=True)
+    command = dream_sub.add_parser("import")
+    command.add_argument("--request-json", required=True, help="Absolute path to strict compiled JSON index")
+    _common(command)
+    command.set_defaults(func=cmd_correction_references, v8_operation="dream_import")
 
     k = sub.add_parser("kinbase", help="Read Kinbase evidence or submit repository observations")
     ks = k.add_subparsers(dest="kinbase_action", required=True)
@@ -7629,6 +7861,19 @@ def build_parser() -> argparse.ArgumentParser:
     _common(s)
     s.set_defaults(func=cmd_profile)
 
+    # Offline recall metadata, independently switchable at retrieval time.
+    s = sub.add_parser("recall-cues", help="Build or inspect offline recall metadata")
+    _common(s)
+    cue_sub = s.add_subparsers(dest="recall_cues_action", required=True)
+    cs = cue_sub.add_parser("build", help="Build/rebuild a bounded set of source cues")
+    cs.add_argument("--node", dest="node_ids", action="append", help="Source ID (repeatable)")
+    cs.add_argument("--limit", type=int, default=100, help="Maximum sources (1..1000)")
+    _common(cs)
+    cs.set_defaults(func=cmd_recall_cues)
+    cs = cue_sub.add_parser("status", help="Count stored cue sets and cues")
+    _common(cs)
+    cs.set_defaults(func=cmd_recall_cues)
+
     # embed
     s = sub.add_parser("embed", help="Index and maintain vector search")
     s.add_argument("--verbose", "-v", action="store_true")
@@ -7927,10 +8172,15 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("sim", help="Sim supervisory check-in runtime controls")
     s.add_argument("sim_action", nargs="?", default="status",
                    choices=["status", "on", "off", "enable", "disable", "inherit",
-                            "check", "drain", "guidance"],
+                            "check", "drain", "guidance", "attention", "backoff", "clear-control", "ack", "control-status"],
                    help="Action: status, on/off (kill switch), inherit, check, drain, guidance")
     s.add_argument("--text", help="Window for `check`, or guidance text for `guidance`")
     s.add_argument("--clear", action="store_true", help="With `guidance`: clear it")
+    scope = s.add_mutually_exclusive_group()
+    scope.add_argument("--conversation-id")
+    scope.add_argument("--store", dest="store_scope", action="store_true")
+    s.add_argument("--duration-seconds", type=int)
+    s.add_argument("--review-id")
     _common(s)
     s.set_defaults(func=cmd_sim)
 
@@ -8049,6 +8299,47 @@ def build_parser() -> argparse.ArgumentParser:
     _common(s)
     s.set_defaults(func=cmd_watch)
 
+    # Additive query context is an explicit readonly operation; old search,
+    # resume, hooks and their defaults retain their existing behavior.
+    s = sub.add_parser("context-query", help="Prepare scoped query context with optional additive handoff")
+    s.add_argument("query", help="Literal query (quote multiword queries)")
+    s.add_argument("--source-bytes", type=int, required=True, help="Independent serialized source UTF-8 ceiling (0..16384)")
+    s.add_argument("--top-k", type=int, default=6, help="Native RRF candidates (1..10)")
+    s.add_argument("--client", help="Explicit local operator client choice; must agree with configured client")
+    s.add_argument("--include-handoff", action="store_true")
+    s.add_argument("--evidence-session-id", help="Original stable session ID")
+    s.add_argument("--handoff-bytes", type=int, default=0, help="Additional serialized handoff UTF-8 ceiling (0..16384)")
+    s.add_argument("--selection", choices=("query_candidates", "explicit_selected"), default="query_candidates")
+    s.add_argument("--evidence-id", action="append", help="Canonical UUID; repeat to narrow original captures")
+    s.add_argument("--action", default="", help="Exact prerequisite context action key")
+    s.add_argument("--at", help="One timezone-aware RFC3339 evaluation instant")
+    _common(s)
+    s.set_defaults(func=cmd_context_query)
+
+    # Explicit source-bound evidence, with no alternate database locator input.
+    evidence = sub.add_parser("evidence", help="Retain and inspect session evidence")
+    evidence_sub = evidence.add_subparsers(dest="evidence_command", required=True)
+    for command in ("snapshot", "retain", "inspect", "project"):
+        ep = evidence_sub.add_parser(command)
+        _common(ep)
+        ep.set_defaults(func=cmd_evidence)
+        if command in ("snapshot", "retain"):
+            ep.add_argument("--node", required=True)
+        if command != "snapshot":
+            ep.add_argument("--session-id", required=True)
+        if command == "retain":
+            ep.add_argument("--expected-source-sha256", required=True)
+            ep.add_argument("--expected-metadata-sha256", required=True)
+            ep.add_argument("--start-byte", required=True, type=int)
+            ep.add_argument("--end-byte", required=True, type=int)
+            ep.add_argument("--operation-id", required=True)
+            ep.add_argument("--cue", default="")
+            ep.add_argument("--kind", default="evidence", choices=("evidence", "prerequisite_context"))
+        if command in ("retain", "project"):
+            ep.add_argument("--action", default="")
+        if command == "project":
+            ep.add_argument("--max-aux-bytes", type=int, default=4096)
+
     # tag (session tags)
     s = sub.add_parser("tag", help="Session tag management (start, update, resume, etc.)")
     s.add_argument("tag_action",
@@ -8064,6 +8355,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--done", help="Mark items as done / remove from remaining (comma-separated)")
     s.add_argument("--status", help="Filter by status (for list: active/paused/completed)")
     s.add_argument("--project", action="store_true", help="Filter by current project (for list)")
+    s.add_argument("--include-evidence", action="store_true", help="Append explicit session evidence")
+    s.add_argument("--evidence-session-id", help="Stable session ID required for evidence")
+    s.add_argument("--evidence-max-bytes", type=int, default=4096, help="Additional evidence UTF-8 byte ceiling")
+    s.add_argument("--evidence-action", default="", help="Exact prerequisite context action key")
     s.add_argument(
         "--tokens",
         type=int,

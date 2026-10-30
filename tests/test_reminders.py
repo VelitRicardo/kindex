@@ -10,6 +10,7 @@ import sys
 import pytest
 
 from kindex.config import Config
+from kindex.reminders import _HOST_SESSION_ENV
 from kindex.store import Store
 
 
@@ -549,7 +550,8 @@ class TestReminderCLI:
             "--instructions", "Continue the outstanding build work.",
             "--json",
             tmp_path=tmp_path,
-            env={"CODEX_HOME": str(home), "CODEX_THREAD_ID": ""},
+            env={"CODEX_HOME": str(home),
+                 **{name: "" for name in _HOST_SESSION_ENV["codex"]}},
         )
 
         assert result.returncode == 0, result.stderr
@@ -857,7 +859,7 @@ class TestCreateReminderWithAction:
             create_reminder(store, "Later", "in 1 hour", action_instructions="go",
                             wake_client="opencode", wake_session_id="last",
                             wake_cwd=str(tmp_path))
-        for name in ("CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_CONVERSATION_ID"):
+        for name in _HOST_SESSION_ENV["codex"]:
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv("CODEX_HOME", str(tmp_path / "empty-codex"))
         with pytest.raises(ValueError, match="Cannot resolve the latest codex session"):

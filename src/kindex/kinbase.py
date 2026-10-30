@@ -594,7 +594,7 @@ def sync_kinbase(store, repo: str | Path, *, mode="auto", binary="kinbase",
             "deactivated": deactivated, "quarantine": redact(quarantine)}
 
 
-def attach_unknowns(store, node):
+def attach_unknowns(store, node, *, node_filter=None):
     """Attach contested questions outside top_k so selecting a fact keeps its caveat."""
     metadata = (node.get("extra") or {}).get("kinbase")
     if not isinstance(metadata, dict):
@@ -607,6 +607,8 @@ def attach_unknowns(store, node):
         (metadata["repo"], metadata["logical_key"], node["id"]))
     for row in rows:
         question = store._row_to_dict(row)
+        if node_filter is not None and not node_filter(question):
+            continue
         from .store import node_expired
         if node_expired(question):
             continue

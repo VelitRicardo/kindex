@@ -320,7 +320,7 @@ def test_v15_migration_indexes_kinbase_rows_on_an_existing_store(tmp_path):
     store.close()
     store = Store(Config(data_dir=str(tmp_path)))
     try:
-        assert store.get_meta("schema_version") == "15"
+        assert store.get_meta("schema_version") == str(SCHEMA_VERSION)
         assert store.conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'index' "
             "AND name = 'idx_nodes_kinbase_repo'").fetchone()

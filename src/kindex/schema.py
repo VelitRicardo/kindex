@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 STANDINGS = ("unruled", "present", "prevalent", "exemplary", "enforced", "ratified", "authoritative")
 
@@ -24,6 +24,18 @@ OPERATIONAL_TYPES = (
 )
 
 ALL_NODE_TYPES = NODE_TYPES + OPERATIONAL_TYPES
+
+# Storage also serves dedicated internal producers. Keep this separate from
+# public API allowlists: coordination owns collabs, and claude_web owns imported
+# conversation history. A storage allowance does not grant generic add access.
+STORAGE_NODE_TYPES = ALL_NODE_TYPES + ("coordination", "conversation")
+
+
+def validate_storage_node_type(node_type: object) -> None:
+    """Refuse malformed types without rewriting legacy evidence or echoing it."""
+    if not isinstance(node_type, str) or node_type not in STORAGE_NODE_TYPES:
+        raise ValueError("node_type is not allowed")
+
 
 # What a generic add may create. Tasks, sessions and projects have their own
 # tools, which own their lifecycle; an unknown type would fall to the
@@ -352,3 +364,21 @@ CREATE INDEX IF NOT EXISTS idx_coactivation_b ON node_coactivation(node_b);
 CREATE INDEX IF NOT EXISTS idx_coactivation_strength
     ON node_coactivation(strength DESC);
 """
+
+# Separate retrieval metadata: it must never enter authoritative node FTS,
+# exports, vectors or evidence. No FK cascade: node replacement preserves an
+# unchanged sidecar, and every retrieval validates the current source hash.
+RECALL_CUES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS recall_cue_sets (
+    source_id TEXT PRIMARY KEY,
+    source_hash TEXT NOT NULL,
+    generator_version TEXT NOT NULL,
+    generated_at TEXT NOT NULL,
+    cues_json TEXT NOT NULL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS recall_cues_fts USING fts5(
+    source_id UNINDEXED,
+    text
+);
+"""
+CREATE_TABLES += RECALL_CUES_SCHEMA

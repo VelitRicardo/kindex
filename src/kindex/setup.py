@@ -30,6 +30,9 @@ if TYPE_CHECKING:
 
 def _kin_command_parts(kin_path: str) -> list[str]:
     """Split the fallback python -m invocation while preserving normal kin paths."""
+    if kin_path == f"{sys.executable} -m kindex.cli":
+        # shlex would drop the backslashes of a Windows interpreter path.
+        return [sys.executable, "-m", "kindex.cli"]
     if " -m kindex.cli" in kin_path:
         return shlex.split(kin_path)
     return [kin_path]
@@ -129,7 +132,7 @@ def _codex_record_path(config: "Config") -> Path:
 
 def _read_codex_record(config: "Config") -> CodexHookRecord:
     try:
-        return CodexHookRecord.model_validate_json(_codex_record_path(config).read_text())
+        return CodexHookRecord.model_validate_json(_codex_record_path(config).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return CodexHookRecord()
 
@@ -202,7 +205,7 @@ def _write_codex_hooks(hooks_path: Path, data: dict) -> None:
         backup = hooks_path.with_name(f"hooks.kindex-backup-{digest}.json")
         if not backup.exists():
             shutil.copy2(hooks_path, backup)
-    hooks_path.write_text(json.dumps(data, indent=2) + "\n")
+    hooks_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
 def install_codex_hooks(config: "Config", dry_run: bool = False) -> list[str]:
@@ -216,7 +219,7 @@ def install_codex_hooks(config: "Config", dry_run: bool = False) -> list[str]:
 
     hooks_path = config.codex_path / "hooks.json"
     actions = []
-    data = json.loads(hooks_path.read_text()) if hooks_path.exists() else {}
+    data = json.loads(hooks_path.read_text(encoding="utf-8")) if hooks_path.exists() else {}
     hooks = data.setdefault("hooks", {})
     kin_path = _find_kin_path()
     record = _read_codex_record(config)
@@ -248,7 +251,7 @@ def install_codex_hooks(config: "Config", dry_run: bool = False) -> list[str]:
         return actions
     _write_codex_hooks(hooks_path, data)
     _codex_record_path(config).write_text(
-        CodexHookRecord(commands=sorted(set(record.commands) | set(installed))).model_dump_json())
+        CodexHookRecord(commands=sorted(set(record.commands) | set(installed))).model_dump_json(), encoding="utf-8")
     actions.append(f"Wrote {hooks_path}")
     actions.append(CODEX_TRUST_NOTICE)
     return actions
@@ -262,7 +265,7 @@ def uninstall_codex_hooks(config: "Config", dry_run: bool = False) -> list[str]:
     if not hooks_path.exists():
         return ["No Codex hooks.json found"]
 
-    data = json.loads(hooks_path.read_text())
+    data = json.loads(hooks_path.read_text(encoding="utf-8"))
     hooks = data.get("hooks", {})
     owned = _codex_owned_commands(_find_kin_path(), _read_codex_record(config))
     scoped = {"hooks": {event: hooks.get(event, [])
@@ -297,7 +300,7 @@ def install_codex_mcp(config: "Config", dry_run: bool = False) -> list[str]:
     config_path = config.codex_path / "config.toml"
     actions = []
 
-    existing = config_path.read_text() if config_path.exists() else ""
+    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
 
     if "[mcp_servers.kindex]" in existing:
         actions.append("Codex MCP server already installed")
@@ -313,7 +316,7 @@ def install_codex_mcp(config: "Config", dry_run: bool = False) -> list[str]:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     prefix = existing.rstrip()
     content = f"{prefix}\n\n{block}" if prefix else block
-    config_path.write_text(content)
+    config_path.write_text(content, encoding="utf-8")
     actions.append(f"Added Codex MCP server: kindex -> kin-mcp")
     actions.append(f"Wrote {config_path}")
     return actions
@@ -327,7 +330,7 @@ def uninstall_codex_mcp(config: "Config", dry_run: bool = False) -> list[str]:
     if not config_path.exists():
         return ["No Codex config.toml found"]
 
-    text = config_path.read_text()
+    text = config_path.read_text(encoding="utf-8")
     lines = text.splitlines()
     out: list[str] = []
     removed = False
@@ -349,7 +352,7 @@ def uninstall_codex_mcp(config: "Config", dry_run: bool = False) -> list[str]:
     if dry_run:
         actions.append(f"Would remove Codex MCP server from {config_path}")
     else:
-        config_path.write_text("\n".join(out).rstrip() + "\n")
+        config_path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
         actions.append(f"Removed Codex MCP server from {config_path}")
 
     return actions
@@ -361,7 +364,7 @@ def install_gemini_mcp(config: "Config", dry_run: bool = False) -> list[str]:
     actions = []
 
     if settings_path.exists():
-        data = json.loads(settings_path.read_text())
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
     else:
         data = {}
 
@@ -377,7 +380,7 @@ def install_gemini_mcp(config: "Config", dry_run: bool = False) -> list[str]:
         return actions
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     actions.append("Added Gemini MCP server: kindex -> kin-mcp")
     actions.append(f"Wrote {settings_path}")
     return actions
@@ -390,7 +393,7 @@ def uninstall_gemini_mcp(config: "Config", dry_run: bool = False) -> list[str]:
     if not settings_path.exists():
         return ["No Gemini settings.json found"]
 
-    data = json.loads(settings_path.read_text())
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
     mcp_servers = data.get("mcpServers", {})
 
     if "kindex" not in mcp_servers:
@@ -405,13 +408,13 @@ def uninstall_gemini_mcp(config: "Config", dry_run: bool = False) -> list[str]:
     else:
         data.pop("mcpServers", None)
 
-    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return [f"Removed Gemini MCP server from {settings_path}"]
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
     if path.exists():
-        content = path.read_text().strip()
+        content = path.read_text(encoding="utf-8").strip()
         if not content:
             return {}
         try:
@@ -458,7 +461,7 @@ def install_antigravity_mcp(config: "Config", dry_run: bool = False) -> list[str
             actions.append(f"Would add Antigravity MCP server to {settings_path}")
             continue
         settings_path.parent.mkdir(parents=True, exist_ok=True)
-        settings_path.write_text(json.dumps(data, indent=2) + "\n")
+        settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         actions.append(f"Added {label} MCP server: kindex -> kin-mcp")
         actions.append(f"Wrote {settings_path}")
 
@@ -485,7 +488,7 @@ def uninstall_antigravity_mcp(config: "Config", dry_run: bool = False) -> list[s
             data["mcpServers"] = mcp_servers
         else:
             data.pop("mcpServers", None)
-        settings_path.write_text(json.dumps(data, indent=2) + "\n")
+        settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         actions.append(f"Removed {label} MCP server from {settings_path}")
     return actions
 
@@ -565,7 +568,7 @@ def install_antigravity_hooks(config: "Config", dry_run: bool = False) -> list[s
         return actions
 
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
-    hooks_path.write_text(json.dumps(data, indent=2) + "\n")
+    hooks_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     actions.append(f"Wrote {hooks_path}")
     return actions
 
@@ -581,7 +584,7 @@ def uninstall_antigravity_hooks(config: "Config", dry_run: bool = False) -> list
     if dry_run:
         return [f"Would remove Antigravity Kindex hooks from {hooks_path}"]
     data.pop("kindex", None)
-    hooks_path.write_text(json.dumps(data, indent=2) + "\n")
+    hooks_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return [f"Removed Antigravity Kindex hooks from {hooks_path}"]
 
 
@@ -591,7 +594,7 @@ def install_opencode_mcp(config: "Config", dry_run: bool = False) -> list[str]:
     actions = []
 
     if settings_path.exists():
-        data = json.loads(settings_path.read_text())
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
     else:
         data = {"$schema": "https://opencode.ai/config.json"}
 
@@ -611,7 +614,7 @@ def install_opencode_mcp(config: "Config", dry_run: bool = False) -> list[str]:
         return actions
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     actions.append("Added OpenCode MCP server: kindex -> kin-mcp")
     actions.append(f"Wrote {settings_path}")
     return actions
@@ -624,7 +627,7 @@ def uninstall_opencode_mcp(config: "Config", dry_run: bool = False) -> list[str]
     if not settings_path.exists():
         return ["No OpenCode opencode.json found"]
 
-    data = json.loads(settings_path.read_text())
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
     mcp = data.get("mcp", {})
 
     if "kindex" not in mcp:
@@ -639,7 +642,7 @@ def uninstall_opencode_mcp(config: "Config", dry_run: bool = False) -> list[str]
     else:
         data.pop("mcp", None)
 
-    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return [f"Removed OpenCode MCP server from {settings_path}"]
 
 
@@ -679,7 +682,7 @@ def install_muse_mcp(config: "Config", dry_run: bool = False) -> list[str]:
         ]
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return [f"Added Muse MCP server: kindex -> {command}", f"Wrote {settings_path}"]
 
 
@@ -705,7 +708,7 @@ def uninstall_muse_mcp(config: "Config", dry_run: bool = False) -> list[str]:
     else:
         data.pop("mcpServers", None)
 
-    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return [f"Removed Muse MCP server from {settings_path}"]
 
 
@@ -877,13 +880,13 @@ def install_opencode_hooks(config: "Config", dry_run: bool = False) -> list[str]
     because the MCP server's cwd is not the project's).
     """
     plugin_path = config.opencode_path / "plugin" / "kindex.js"
-    if plugin_path.exists() and plugin_path.read_text() == _OPENCODE_PLUGIN_JS:
+    if plugin_path.exists() and plugin_path.read_text(encoding="utf-8") == _OPENCODE_PLUGIN_JS:
         return ["OpenCode plugin already installed"]
     verb = "Updated" if plugin_path.exists() else "Added"
     if dry_run:
         return [f"Would write Kindex OpenCode plugin to {plugin_path}"]
     plugin_path.parent.mkdir(parents=True, exist_ok=True)
-    plugin_path.write_text(_OPENCODE_PLUGIN_JS)
+    plugin_path.write_text(_OPENCODE_PLUGIN_JS, encoding="utf-8")
     return [f"{verb} Kindex OpenCode plugin (kin prime on session start)",
             f"Wrote {plugin_path}"]
 
@@ -923,7 +926,7 @@ def _is_cursor_supervisor_hook(entry: Any) -> bool:
 
 def _configure_cursor_hooks(config: "Config", *, uninstall: bool, dry_run: bool) -> list[str]:
     path = config.cursor_path / "hooks.json"
-    data = json.loads(path.read_text()) if path.exists() else {}
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     if not isinstance(data, dict):
         raise ValueError("Cursor hooks configuration must be an object; it was not changed")
     original = json.dumps(data, sort_keys=True)
@@ -957,7 +960,7 @@ def _configure_cursor_hooks(config: "Config", *, uninstall: bool, dry_run: bool)
     if dry_run:
         return [f"Would {verb.lower()} Cursor Kindex supervisor hooks in {path}"]
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return [f"{'Removed' if uninstall else 'Installed'} Cursor Kindex supervisor hooks in {path}"]
 
 
@@ -977,7 +980,7 @@ def install_cursor_mcp(config: "Config", dry_run: bool = False) -> list[str]:
     actions = []
 
     if settings_path.exists():
-        data = json.loads(settings_path.read_text())
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
     else:
         data = {}
 
@@ -996,7 +999,7 @@ def install_cursor_mcp(config: "Config", dry_run: bool = False) -> list[str]:
         return actions
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     actions.append("Added Cursor MCP server: kindex -> kin-mcp")
     actions.append(f"Wrote {settings_path}")
     return actions
@@ -1009,7 +1012,7 @@ def uninstall_cursor_mcp(config: "Config", dry_run: bool = False) -> list[str]:
     if not settings_path.exists():
         return ["No Cursor mcp.json found"]
 
-    data = json.loads(settings_path.read_text())
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
     mcp_servers = data.get("mcpServers", {})
 
     if "kindex" not in mcp_servers:
@@ -1024,7 +1027,7 @@ def uninstall_cursor_mcp(config: "Config", dry_run: bool = False) -> list[str]:
     else:
         data.pop("mcpServers", None)
 
-    settings_path.write_text(json.dumps(data, indent=2) + "\n")
+    settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return [f"Removed Cursor MCP server from {settings_path}"]
 
 
@@ -1061,7 +1064,7 @@ def install_launchd(config: "Config", dry_run: bool = False) -> list[str]:
     if not dry_run:
         launch_agents.mkdir(parents=True, exist_ok=True)
         log_dir.mkdir(parents=True, exist_ok=True)
-        plist_path.write_text(plist_content)
+        plist_path.write_text(plist_content, encoding="utf-8")
         _launchctl_reload(plist_path)
         actions.append(f"Installed launchd plist: {plist_path}")
         actions.append("Loaded with launchctl")
@@ -1357,7 +1360,7 @@ def install_reminder_daemon(config: "Config", dry_run: bool = False) -> list[str
     if not dry_run:
         launch_agents.mkdir(parents=True, exist_ok=True)
         log_dir.mkdir(parents=True, exist_ok=True)
-        plist_path.write_text(plist_content)
+        plist_path.write_text(plist_content, encoding="utf-8")
         _launchctl_reload(plist_path)
         actions.append(f"Installed reminder daemon: {plist_path}")
         actions.append(f"Check interval: {interval}s")
@@ -1416,6 +1419,32 @@ _KIN_MERGE_ATTRS = (
     ".kin/code-map.json merge=kindex",
 )
 _KIN_MERGE_ATTR_HEADER = "# Kindex generated artifacts: structured union merge"
+_KIN_TEXT_ATTRS = (
+    ".kin/config text eol=lf !working-tree-encoding -filter -ident",
+    ".kin/*.json text eol=lf !working-tree-encoding -filter -ident",
+    ".kin/*.jsonl text eol=lf !working-tree-encoding -filter -ident",
+    ".kin/*.md text eol=lf !working-tree-encoding -filter -ident",
+)
+_KIN_TEXT_ATTR_HEADER = "# Kindex tracked text: UTF-8 bytes and LF in every worktree"
+
+
+def install_kin_text_attributes(root: Path, dry_run: bool = False) -> list[str]:
+    """Add the tracked .kin UTF-8/LF policy when it is missing."""
+    attrs_path = root / ".gitattributes"
+    existing = attrs_path.read_text(encoding="utf-8").splitlines() if attrs_path.exists() else []
+    have = {line.strip() for line in existing}
+    missing = [line for line in _KIN_TEXT_ATTRS if line not in have]
+    if not missing:
+        return []
+    if dry_run:
+        return [f"[dry-run] add to .gitattributes: {missing}"]
+    lines = list(existing)
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.append(_KIN_TEXT_ATTR_HEADER)
+    lines.extend(missing)
+    attrs_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return [f"updated {attrs_path} (+{len(missing)} UTF-8/LF entries)"]
 
 
 def git_repo_root(start: "str | Path | None" = None) -> "Path | None":
@@ -1455,7 +1484,7 @@ def merge_driver_registered(root: "Path") -> bool:
     attrs_path = root / ".gitattributes"
     if not attrs_path.exists():
         return False
-    have = {line.strip() for line in attrs_path.read_text().splitlines()}
+    have = {line.strip() for line in attrs_path.read_text(encoding="utf-8").splitlines()}
     return all(attr in have for attr in _KIN_MERGE_ATTRS)
 
 
@@ -1466,12 +1495,10 @@ def install_merge_driver(root: "Path", dry_run: bool = False) -> list[str]:
     while ``.gitattributes`` (committed) points the ``.kin`` artifacts at it. Repos
     without the driver registered fall back to git's default merge gracefully.
     """
-    actions: list[str] = []
+    actions = install_kin_text_attributes(root, dry_run=dry_run)
     # git runs the driver through sh: quote the program, whose path may hold
     # spaces or (on Windows) backslashes that sh would drop.
-    executable = shutil.which("kin")
-    program = [executable] if executable else [sys.executable, "-m", "kindex.cli"]
-    driver_cmd = shlex.join([*program, "merge-kin"]) + " %O %A %B %P"
+    driver_cmd = shlex.join([*_kin_command_parts(_find_kin_path()), "merge-kin"]) + " %O %A %B %P"
     for key, value in (
         ("merge.kindex.name", "Kindex .kin artifact structured merge"),
         ("merge.kindex.driver", driver_cmd),
@@ -1484,7 +1511,7 @@ def install_merge_driver(root: "Path", dry_run: bool = False) -> list[str]:
         actions.append(f"git config {key} = {value}")
 
     attrs_path = root / ".gitattributes"
-    existing = attrs_path.read_text().splitlines() if attrs_path.exists() else []
+    existing = attrs_path.read_text(encoding="utf-8").splitlines() if attrs_path.exists() else []
     have = {line.strip() for line in existing}
     missing = [a for a in _KIN_MERGE_ATTRS if a not in have]
     if not missing:
@@ -1498,7 +1525,7 @@ def install_merge_driver(root: "Path", dry_run: bool = False) -> list[str]:
         lines.append("")
     lines.append(_KIN_MERGE_ATTR_HEADER)
     lines.extend(missing)
-    attrs_path.write_text("\n".join(lines) + "\n")
+    attrs_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     actions.append(f"updated {attrs_path} (+{len(missing)} entries)")
     return actions
 
@@ -1520,13 +1547,13 @@ def uninstall_merge_driver(root: "Path", dry_run: bool = False) -> list[str]:
     attrs_path = root / ".gitattributes"
     if attrs_path.exists():
         drop = set(_KIN_MERGE_ATTRS) | {_KIN_MERGE_ATTR_HEADER}
-        kept = [ln for ln in attrs_path.read_text().splitlines() if ln.strip() not in drop]
+        kept = [ln for ln in attrs_path.read_text(encoding="utf-8").splitlines() if ln.strip() not in drop]
         if dry_run:
             actions.append(f"[dry-run] strip kindex entries from {attrs_path}")
         elif any(ln.strip() for ln in kept):
-            attrs_path.write_text("\n".join(kept).rstrip() + "\n")
+            attrs_path.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8", newline="\n")
             actions.append(f"stripped kindex entries from {attrs_path}")
         else:
-            attrs_path.write_text("")
+            attrs_path.write_text("", encoding="utf-8", newline="\n")
             actions.append(f"cleared {attrs_path}")
     return actions

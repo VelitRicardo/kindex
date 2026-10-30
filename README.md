@@ -2,7 +2,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![v0.49.0](https://img.shields.io/badge/version-0.49.0-purple.svg)](https://github.com/wandercom/kindex/releases)
+[![v0.50.0](https://img.shields.io/badge/version-0.50.0-purple.svg)](https://github.com/wandercom/kindex/releases)
 [![PyPI](https://img.shields.io/pypi/v/kindex.svg)](https://pypi.org/project/kindex/)
 [![MCP Market](https://img.shields.io/badge/MCP%20Market-kindex-blue.svg)](https://mcpmarket.com/server/kindex)
 [![Tests](https://github.com/wandercom/kindex/actions/workflows/ci.yml/badge.svg)](https://github.com/wandercom/kindex/actions/workflows/ci.yml)
@@ -163,7 +163,39 @@ require the launcher's `--allow-kinbase-submit`; `--no-kinbase` omits Kinbase en
 See [repository-bound MCP](docs/mcp-lite.md)
 for configuration and the isolation boundary.
 
-The MCP server exposes 50+ native tools to supported clients: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `edit`, `supersede`, `list_nodes`, `status`, `suggest`, `candidate_*`, `verify`, `invalidate`, `stale_check`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `task_claim`, `coord_*`, `lock_acquire`, `lock_release`, `remind_*`, `mode_*`, and more.
+The MCP server exposes 50+ native tools to supported clients: `search`, `add`, `context`, `show`, `ask`, `learn`, `link`, `edit`, `supersede`, `list_nodes`, `status`, `suggest`, `candidate_*`, `verify`, `invalidate`, `stale_check`, `graph_stats`, `graph_merge`, `dream`, `changelog`, `ingest`, `tag_start`, `tag_update`, `tag_resume`, `query_context`, `task_claim`, `coord_*`, `lock_acquire`, `lock_release`, `remind_*`, `mode_*`, and more.
+
+For explicitly scoped read-only query preparation and optional additive retained
+evidence, see [query context](docs/query-context.md). The supported pilot paths
+are `kin context-query` and full MCP `query_context`.
+
+Offline recall cues are an experimental, disabled-by-default lexical sidecar.
+Explicitly prepare a bounded batch with `kin recall-cues build --limit 100`
+(repeat `--node ID` to select sources), and inspect counts with
+`kin recall-cues status`; both accept the shared `--config`, `--data-dir`,
+`--profile` and `--json` flags after the subcommand. MCP exposes the same
+operations as `recall_cues_build(node_ids=None, limit=100)` and
+`recall_cues_status()`.
+
+Enable supplemental retrieval in your selected configuration:
+
+```yaml
+recall_cues:
+  enabled: true
+  candidate_limit: 20  # 1..100 additional source candidates
+  rank_weight: 0.10   # relative ranking weight; not factual confidence
+```
+
+Builds make no provider calls and change only derived metadata. Each source
+gets at most three aliases or framed exact source spans; source alias origin
+does not assert human authorship. The index uses only the supporting source
+wording, while answers and context receive only original source nodes. This
+extractive arm cannot invent missing synonyms or demonstrate personalized
+memory benefits. It has an additional candidate/index budget, so compare it
+with ordinary retrieval explicitly. Source changes invalidate cues immediately;
+run an explicit bounded rebuild to refresh them. Roll back retrieval by setting
+`enabled: false`; stored sidecars remain available for later rebuilding. There
+is no automatic maintenance, generation service, or background scheduling.
 
 For coding agents, install both the MCP server and the instruction file. The
 instruction file tells the model how to use kindex: start a session tag, read
@@ -316,7 +348,9 @@ Nodes have types, weights, domains, and audiences. Edges carry provenance and de
 Constraints block deploys. Directives encode preferences. Watches flag attention items. Checkpoints run pre-flight. No other memory plugin has this.
 
 ### Answers from dated evidence
-`kin ask` answers in one model call from dated evidence: the matching nodes in chronological order with today's date and your standing directives, trimmed to the messages that bear on the question, within a small budget for a single fact and a wider one for counts, lists, orderings, summaries and advice. Conversation facts and per-person profiles written by `kin digest` let it answer from a few thousand tokens, and relative dates in the evidence arrive already resolved. With `conversations.claims: true` in your config, `kin digest` records turn-level claims instead of per-conversation facts, each tied to the message it came from (its place in the conversation and its words); `kin digest --claims` converts conversations digested earlier. In a terminal the answer streams as it is written. The answer rules cover updated values, counts across conversations, date arithmetic and missing details. `kin ingest conversations --directory DIR` stores chat transcripts without loss for it to search. The MCP `ask` tool returns the same dated evidence to the agent that called it (and drafts the answer itself with `answer=true`); `context(level="evidence")` returns it for a topic.
+`kin ask` answers in one model call from dated evidence: the matching nodes in chronological order with today's date and your standing directives, trimmed to the messages that bear on the question, within a small budget for a single fact and a wider one for counts, lists, orderings, summaries and advice. Conversation facts and per-person profiles written by `kin digest` let it answer from a few thousand tokens, and relative dates in the evidence arrive already resolved. With `conversations.claims: true` in your config, `kin digest` records turn-level claims instead of per-conversation facts, each tied to the message it came from (its place in the conversation and its words); `kin digest --claims` converts conversations digested earlier. In a terminal the answer streams as it is written. The answer rules cover updated values, counts across conversations, date arithmetic and missing details. The defaults suit an agent asking about its own graph: today's date is the clock's (or `--as-of`), reasoning effort is `ask.effort` (medium), and a question that gets a version, name or date wrong is told what the record says. `ask.preset: benchmark` restores the configuration the published LoCoMo, LongMemEval-S and BEAM scores were measured with (`docs/benchmarks/`); pass each question's date with `--as-of` to reproduce them. A directive `kin digest` reads from an imported chat applies once you confirm it (`kin set-state <id> confirmed true`), and `conversations.profiles: true` also writes per-person profiles. `kin ingest conversations --directory DIR` stores chat transcripts without loss for it to search. The MCP `ask` tool returns the same dated evidence to the agent that called it (and drafts the answer itself with `answer=true`); `context(level="evidence")` returns it for a topic.
+
+Claim revisions include source expiry, so changing or removing an expiry refreshes derived claims on the next requested claims backfill. Retraction also clears that conversation's claim revision, allowing an identical re-import to regenerate claims. Older revision keys refresh once on the next explicit `kin digest --claims`, including conversations without expiry; this can use the configured model budget. Claims remain off by default, and upgrading does not start a backfill.
 
 ### Team and org ready
 `.kin` inheritance chains let a service repo inherit from a platform context, which inherits from an org voice. Private/team/org/public scoping with PII stripping on export. Enterprise-ready from day one.
@@ -1007,8 +1041,9 @@ kin ask (answer.py), configured under `ask:`:
   classify   the question's kind, from its wording          (ask.plan: an LLM planner instead)
   retrieve   hybrid_search, one per named part, rank fusion (ask.top_k = 60)
   assemble   dated, oldest first, excerpted + directives    (ask.context_tokens = 5000,
-                                                              ask.wide_context_tokens = 16000, ask.excerpt)
+                                                              ask.wide_context_tokens = 8000, ask.excerpt)
   answer     one call, the rules for that kind              (ask.effort = medium, ask.rules, ask.samples)
+  preset     agent (default) | benchmark                     (ask.preset: the published scores' configuration)
 
 Reminders:
   reminders table (SQLite)    <- separate from knowledge graph
