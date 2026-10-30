@@ -1092,6 +1092,31 @@ def kinbase_submit(repo: str, text: str, node_type: str = "concept") -> str:
 
 
 @_tool()
+def recall_cues_build(node_ids: list[str] | None = None, limit: int = 100) -> str:
+    """Explicitly build at most 1000 offline source cue sets; no providers.
+
+    Retrieval remains disabled until recall_cues.enabled is configured.
+    Source IDs select the active graph; this does not mutate source nodes.
+    """
+    from .recall_cues import build_cues
+
+    store, _ = _get_store()
+    try:
+        return _json(build_cues(store, node_ids=node_ids, limit=limit), indent=2)
+    except ValueError as exc:
+        return f"Error: {safe_error(exc)}"
+
+
+@_tool()
+def recall_cues_status() -> str:
+    """Count stored offline recall sets/cues; validity is checked on retrieval."""
+    from .recall_cues import cue_status
+
+    store, _ = _get_store()
+    return _json(cue_status(store), indent=2)
+
+
+@_tool()
 def search(query: str, top_k: int = 10, tags: str = "",
            include_archived: bool = False,
            trusted_only: bool = False, graph: str = "auto") -> str:
@@ -1126,6 +1151,11 @@ def search(query: str, top_k: int = 10, tags: str = "",
     results = []
     home_results = []
     home_grounding: dict = {}
+    client = _mcp_client()
+    scope_args = {}
+    if client:
+        from .agent_adapters import adapter_scoped_out
+        scope_args["node_filter"] = lambda node: not adapter_scoped_out(node.get("tags"), client)
     try:
         with _selected_read_stores(graph) as (selected, home):
             if selected is not None:
@@ -1134,6 +1164,7 @@ def search(query: str, top_k: int = 10, tags: str = "",
                     include_archived=include_archived, fence_stats=fence_stats,
                     trusted_only=trusted_only, evaluation_time=evaluation_time,
                     grounding=grounding,
+                    **scope_args,
                     **({"use_vectors": False} if _request_scope.get() is not None else {}))
             if home is not None:
                 home_fence: dict = {}
@@ -1141,7 +1172,7 @@ def search(query: str, top_k: int = 10, tags: str = "",
                     home, query, top_k=fetch_k,
                     include_archived=include_archived, fence_stats=home_fence,
                     trusted_only=trusted_only, evaluation_time=evaluation_time,
-                    grounding=home_grounding)
+                    grounding=home_grounding, **scope_args)
                 fence_stats["fenced_nodes"] = (fence_stats.get("fenced_nodes", [])
                                                  + home_fence.get("fenced_nodes", []))
                 fence_stats["candidate_count"] = (fence_stats.get("candidate_count", 0)
@@ -1480,6 +1511,10 @@ def _context_hits(stores, topic: str, top_k: int, client: str | None,
 
     hits = {}
     warnings = {}
+    scope_args = {}
+    if client:
+        from .agent_adapters import adapter_scoped_out
+        scope_args["node_filter"] = lambda node: not adapter_scoped_out(node.get("tags"), client)
     for graph, store in stores.items():
         fence, grounding = {}, {}
         if topic:
@@ -1487,6 +1522,7 @@ def _context_hits(stores, topic: str, top_k: int, client: str | None,
                 store, topic, top_k=top_k, trusted_only=trusted_only,
                 evaluation_time=evaluation_time, fence_stats=fence,
                 grounding=grounding,
+                **scope_args,
                 **({"use_vectors": False} if _request_scope.get() is not None else {}),
             )
         else:

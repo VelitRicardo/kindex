@@ -3597,6 +3597,21 @@ def _profile_create(args):
 
 # ── embed ─────────────────────────────────────────────────────────────
 
+def cmd_recall_cues(args):
+    """Explicit offline administration; never calls an embedding/LLM provider."""
+    from .recall_cues import build_cues, cue_status
+
+    store = _store(args)
+    if args.recall_cues_action == "build":
+        result = build_cues(store, node_ids=args.node_ids, limit=args.limit)
+    else:
+        result = cue_status(store)
+    if args.json:
+        print(_dumps(result, indent=2))
+    else:
+        print("; ".join(f"{name}: {value}" for name, value in result.items()))
+
+
 def cmd_embed(args):
     """Index or reindex nodes for vector similarity search.
 
@@ -7845,6 +7860,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Set as default_profile (for create)")
     _common(s)
     s.set_defaults(func=cmd_profile)
+
+    # Offline recall metadata, independently switchable at retrieval time.
+    s = sub.add_parser("recall-cues", help="Build or inspect offline recall metadata")
+    _common(s)
+    cue_sub = s.add_subparsers(dest="recall_cues_action", required=True)
+    cs = cue_sub.add_parser("build", help="Build/rebuild a bounded set of source cues")
+    cs.add_argument("--node", dest="node_ids", action="append", help="Source ID (repeatable)")
+    cs.add_argument("--limit", type=int, default=100, help="Maximum sources (1..1000)")
+    _common(cs)
+    cs.set_defaults(func=cmd_recall_cues)
+    cs = cue_sub.add_parser("status", help="Count stored cue sets and cues")
+    _common(cs)
+    cs.set_defaults(func=cmd_recall_cues)
 
     # embed
     s = sub.add_parser("embed", help="Index and maintain vector search")

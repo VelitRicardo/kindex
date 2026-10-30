@@ -566,6 +566,8 @@ def gather(store: Store, queries: list[str], top_k: int, stats: dict | None = No
     rankings = []
     clock = _CLOCK.get()
     extra = {"recency_time": clock} if clock is not None else {}
+    if _SCOPE.get() is not None:
+        extra["node_filter"] = _SCOPE.get()
     for q in queries:
         found = hybrid_search(store, q, top_k=top_k, **extra)
         if stats is not None and len(found) >= top_k:

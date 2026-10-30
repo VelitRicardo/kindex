@@ -90,6 +90,11 @@ All notable changes to Kindex are documented here. Format follows [Keep a Change
   capture, dreaming scheduler, provider call or human beta is activated. Packing
   can reduce serialized bytes; the fresh comparison found no recall improvement,
   and organizer effectiveness remains unproven.
+- Optional offline recall cues (`recall_cues.enabled`, disabled by default):
+  bounded explicit CLI/MCP build and status operations maintain a separate
+  lexical sidecar with exact source support and source-only answer evidence.
+  Source changes invalidate cues until rebuilt. Forward migration v16 adds
+  sidecar metadata and FTS tables without changing authoritative nodes.
 - Optional adaptive Sim cadence (`sim.adaptive.enabled`): bounded intervals,
   quiet-result backoff, provider failure cooldowns, and finite scoped controls.
   `kin sim attention|backoff --duration-seconds N` requires `--conversation-id ID`

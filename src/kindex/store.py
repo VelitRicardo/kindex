@@ -42,6 +42,7 @@ from .config import Config
 from .schema import (
     ALL_NODE_TYPES,
     CREATE_TABLES,
+    RECALL_CUES_SCHEMA,
     LEGACY_DREAM_DOMAIN_EDGE_PROVENANCE,
     NODE_ID_SUGGESTION_SOURCES,
     EDGE_TYPES,
@@ -1011,6 +1012,9 @@ class Store:
         if current_version < 15:
             self._migrate_v15()
 
+        if current_version < 16:
+            self._migrate_v16()
+
     def _migrate_v8(self) -> None:
         """Atomically upgrade a version-7 store to the state-resilience schema.
 
@@ -1537,6 +1541,24 @@ class Store:
             c.rollback()
             raise
 
+    def _migrate_v16(self) -> None:
+        """Add an independent, source-versioned offline recall sidecar."""
+        c = self._conn
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            for statement in RECALL_CUES_SCHEMA.split(";"):
+                if statement.strip():
+                    c.execute(statement)
+            for table in ("recall_cue_sets", "recall_cues_fts"):
+                columns = {row["name"] for row in c.execute(f"PRAGMA table_info({table})")}
+                if not self.REQUIRED_COLUMNS[table] <= columns:
+                    raise RuntimeError("v16 migration verification failed: recall cue columns")
+            c.execute("UPDATE meta SET value = '16' WHERE key = 'schema_version'")
+            c.commit()
+        except BaseException:
+            c.rollback()
+            raise
+
     # Columns each table must carry for the code that queries it to work.
     # Checked by `kin doctor`, which is the only place that catches the failure
     # class v10 repairs: a table that exists with the right name and the wrong
@@ -1558,6 +1580,10 @@ class Store:
             "node_a", "node_b", "context", "strength",
             "events", "last_event", "last_decay",
         },
+        "recall_cue_sets": {
+            "source_id", "source_hash", "generator_version", "generated_at", "cues_json",
+        },
+        "recall_cues_fts": {"source_id", "text"},
     }
 
     def repair_schema_drift(self) -> dict[str, set[str]]:

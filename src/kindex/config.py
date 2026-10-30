@@ -725,6 +725,14 @@ class SimConfig(BaseModel):
     advocate: AdvocateConfig = Field(default_factory=AdvocateConfig)
 
 
+class RecallCueConfig(BaseModel):
+    """Explicit offline cue preparation and opt-in supplemental retrieval."""
+
+    enabled: bool = False
+    candidate_limit: int = Field(default=20, ge=1, le=100, strict=True)
+    rank_weight: float = Field(default=0.10, gt=0, le=1, allow_inf_nan=False)
+
+
 class RankingConfig(BaseModel):
     rrf_k: int = 30               # RRF smoothing parameter (lower = sharper discrimination)
     fts_weight: float = 0.40      # FTS5 BM25 signal weight
@@ -953,6 +961,7 @@ class Config(BaseModel):
     sim: SimConfig = Field(default_factory=SimConfig)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     ranking: RankingConfig = Field(default_factory=RankingConfig)
+    recall_cues: RecallCueConfig = Field(default_factory=RecallCueConfig)
     grounding: GroundingConfig = Field(default_factory=GroundingConfig)
     reminders: ReminderConfig = Field(default_factory=ReminderConfig)
     work_policy: WorkPolicyConfig = Field(default_factory=WorkPolicyConfig)

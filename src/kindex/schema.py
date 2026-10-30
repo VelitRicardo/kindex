@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 STANDINGS = ("unruled", "present", "prevalent", "exemplary", "enforced", "ratified", "authoritative")
 
@@ -364,3 +364,21 @@ CREATE INDEX IF NOT EXISTS idx_coactivation_b ON node_coactivation(node_b);
 CREATE INDEX IF NOT EXISTS idx_coactivation_strength
     ON node_coactivation(strength DESC);
 """
+
+# Separate retrieval metadata: it must never enter authoritative node FTS,
+# exports, vectors or evidence. No FK cascade: node replacement preserves an
+# unchanged sidecar, and every retrieval validates the current source hash.
+RECALL_CUES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS recall_cue_sets (
+    source_id TEXT PRIMARY KEY,
+    source_hash TEXT NOT NULL,
+    generator_version TEXT NOT NULL,
+    generated_at TEXT NOT NULL,
+    cues_json TEXT NOT NULL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS recall_cues_fts USING fts5(
+    source_id UNINDEXED,
+    text
+);
+"""
+CREATE_TABLES += RECALL_CUES_SCHEMA
