@@ -1213,7 +1213,7 @@ def user_secret_mask() -> SecretMaskConfig | None:
     for path in _effective_global_paths():
         path = _contained_resolve(path)
         if path is not None and path.is_file():
-            raw = yaml.safe_load(path.read_text()) or {}
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             value = raw.get("secret_mask") if isinstance(raw, dict) else None
             return SecretMaskConfig(**value) if isinstance(value, dict) else None
     return None
@@ -1232,7 +1232,7 @@ def _load_config(
         if not p.exists() and _bound_root is None:
             raise ValueError(f"Kindex config file not found: {config_path}")
         if p.exists():
-            data = yaml.safe_load(p.read_text()) or {}
+            data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
             kin_profile = data.pop("profile", None)
             cfg = _resolve_profile(Config(**data), profile, kin_profile,
                                    profiles_base=p.parent)
@@ -1252,7 +1252,7 @@ def _load_config(
     for p in _effective_global_paths():
         p = _contained_resolve(p)
         if p is not None and p.is_file():
-            data = yaml.safe_load(p.read_text()) or {}
+            data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
             merged = _deep_merge(merged, data)
             profiles_base = p.parent
             break  # use first global found
@@ -1371,7 +1371,7 @@ def trusted_supervisor_config(project_path: str | Path, data_dir: str) -> Config
     for path in _effective_global_paths():
         path = _contained_resolve(path)
         if path is not None and path.is_file():
-            raw = yaml.safe_load(path.read_text()) or {}
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             data = {key: raw[key] for key in ("sim", "llm", "budget", "agents") if key in raw}
             break
     cfg = Config(**data, data_dir=data_dir)
@@ -1681,7 +1681,7 @@ def read_degraded_events(config: Config | None = None,
         try:
             if not path.exists():
                 continue
-            for raw in path.read_text(errors="replace").splitlines():
+            for raw in path.read_text(errors="replace", encoding="utf-8").splitlines():
                 try:
                     event = json.loads(raw)
                 except ValueError:
@@ -1832,7 +1832,7 @@ def _project_config_paths(project_root: Path) -> list[Path]:
 def _load_kin_config_with_inheritance(path: Path) -> dict:
     """Load a .kin config, resolving inherits and merging ancestors."""
     if path.name != "config" or path.parent.name != ".kin":
-        return yaml.safe_load(path.read_text()) or {}
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
     chain = _resolve_kin_chain(path)
     return _merge_kin_chain(chain)
@@ -1846,7 +1846,7 @@ def _resolve_kin_chain(path: Path, remaining: int = 5, seen: set[str] | None = N
         return []
     seen.add(key)
 
-    data = yaml.safe_load(resolved.read_text()) or {}
+    data = yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
     data["_source"] = key
     chain = [data]
 
