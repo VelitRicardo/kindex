@@ -109,27 +109,31 @@ def bound_root(root: str | os.PathLike) -> Iterator[Path]:
 # Global (user-level) is loaded first, then local (project-level) overrides.
 # These are the UNBOUND defaults; when a binding is active, _bound_global_paths
 # and _bound_local_paths resolve them under the bound root instead.
-_GLOBAL_PATHS = [
-    Path.home() / ".config" / "kindex" / "kin.yaml",  # XDG-ish
-    Path.home() / ".config" / "conv" / "conv.yaml",   # legacy
-]
+def _home_config_paths(home: Path) -> list[Path]:
+    return [
+        home / ".config" / "kindex" / "kin.yaml",  # XDG-ish
+        home / ".config" / "conv" / "conv.yaml",   # legacy
+    ]
+
+
+# None derives the global paths from HOME at each call; a list pins them.
+_GLOBAL_PATHS: list[Path] | None = None
 _LOCAL_PATHS = [
     Path(".kin") / "config",                           # cwd (repo-local, .kin/ directory)
     Path("kin.yaml"),                                  # cwd (explicit)
     Path("conv.yaml"),                                 # legacy
 ]
 # Flat list for backward compat (used by config set to find first existing)
-_SEARCH_PATHS = _LOCAL_PATHS + _GLOBAL_PATHS
+_SEARCH_PATHS = _LOCAL_PATHS + _home_config_paths(Path.home())
 
 
 def _effective_global_paths() -> list[Path]:
     """Global config paths, under the bound root when bound."""
     if _bound_root is not None:
-        return [
-            _bound_root / ".config" / "kindex" / "kin.yaml",
-            _bound_root / ".config" / "conv" / "conv.yaml",
-        ]
-    return list(_GLOBAL_PATHS)
+        return _home_config_paths(_bound_root)
+    if _GLOBAL_PATHS is not None:
+        return list(_GLOBAL_PATHS)
+    return _home_config_paths(Path.home())
 
 
 def _effective_local_paths() -> list[Path]:

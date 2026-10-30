@@ -1,5 +1,6 @@
 """Shared test fixtures."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -39,30 +40,26 @@ def hermetic_state_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def hermetic_user_config(tmp_path, monkeypatch):
+def hermetic_user_config(request, tmp_path_factory, monkeypatch):
     """Hide the developer's own Kindex configuration and profile selection.
 
-    The user-level config paths are computed from HOME at import time, so a
-    real ``~/.config/kindex/kin.yaml`` (profiles, default_profile, data_dir)
+    The user-level config paths follow HOME, so a real
+    ``~/.config/kindex/kin.yaml`` (profiles, default_profile, data_dir)
     otherwise leaks into every load_config() call and every CLI subprocess.
-    Tests that need a user config write one under this temporary HOME.
+    Tests that need a user config write one under this temporary HOME, or set
+    their own HOME and the config paths follow it.
     """
-    from kindex import config
-
-    home = tmp_path / "hermetic-home"
-    home.mkdir()
+    # Outside tmp_path, which tests own and may list or create "home" in.
+    name = re.sub(r"\W", "_", request.node.name)[:40]
+    home = tmp_path_factory.mktemp(f"home-{name}")
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     # Ambient selection and routing from the developer's shell or host session.
     # KIN_HEALTH_DIR would also bypass the supervisor-health settings gate.
     for var in ("KIN_PROFILE", "KIN_PROJECT", "KIN_PROJECT_PATH", "KIN_AGENT_ID",
                 "KIN_CLIENT", "KIN_SESSION_ID", "KIN_HEALTH_DIR", "KIN_LINEAR_ID",
                 "KIN_SIGNET_EXECUTABLE"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(config, "_GLOBAL_PATHS", [
-        home / ".config" / "kindex" / "kin.yaml",
-        home / ".config" / "conv" / "conv.yaml",
-    ])
     return home
 
 
