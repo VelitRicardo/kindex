@@ -398,6 +398,24 @@ def test_setup_merge_driver_quotes_the_kin_program_for_sh(tmp_path, monkeypatch)
     subprocess.run(["which", "git"], capture_output=True).returncode != 0,
     reason="git not available",
 )
+def test_setup_merge_driver_quotes_the_python_fallback_for_sh(tmp_path, monkeypatch):
+    """Without kin on PATH the driver runs `python -m kindex.cli`; a Windows
+    interpreter path keeps its backslashes and spaces."""
+    import kindex.setup as setup
+    repo = tmp_path / "r"; repo.mkdir()
+    _git(repo, "init", "-q")
+    python = r"C:\Program Files\Python313\python.exe"
+    monkeypatch.setattr(setup.shutil, "which", lambda name: None)
+    monkeypatch.setattr(setup.sys, "executable", python)
+    setup.install_merge_driver(setup.git_repo_root(repo))
+    driver = _git(repo, "config", "merge.kindex.driver").stdout.strip()
+    assert shlex.split(driver) == [python, "-m", "kindex.cli", "merge-kin", "%O", "%A", "%B", "%P"]
+
+
+@pytest.mark.skipif(
+    subprocess.run(["which", "git"], capture_output=True).returncode != 0,
+    reason="git not available",
+)
 def test_setup_merge_driver_install_is_idempotent_and_reversible(tmp_path):
     from kindex.setup import (
         git_repo_root, install_merge_driver, uninstall_merge_driver,

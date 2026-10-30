@@ -421,8 +421,6 @@ def _run_helper(tmp_path, bin_dir, mode="reload", lock=None):
     if not plist.exists():
         plist.write_text("300\n")
     lock = lock or tmp_path / "reload.lock"
-    from kindex import platform_io
-
     env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
     subprocess.run(
         [platform_io.posix_shell(), "-c", RELOAD_WHEN_IDLE, "kindex-reload",

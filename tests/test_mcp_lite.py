@@ -360,9 +360,13 @@ def test_ambient_provider_credentials_do_not_enable_network_calls(isolated, monk
 
     def loopback_or_forbidden(sock, address, *args, **kwargs):
         # Windows' asyncio builds its self-pipe with a loopback connect; that is
-        # no provider. Every other address is.
+        # no provider. Every other address is, a hostname included.
         host = address[0] if isinstance(address, tuple) else None
-        if host is not None and ipaddress.ip_address(host).is_loopback:
+        try:
+            loopback = host is not None and ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+        if loopback:
             return real_connect(sock, address, *args, **kwargs)
         return forbidden(sock, address, *args, **kwargs)
     monkeypatch.setattr(socket.socket, "connect", loopback_or_forbidden)
