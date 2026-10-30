@@ -2,7 +2,7 @@
 
 POSIX keeps ``O_NOFOLLOW`` and ``flock``. Windows has neither, so:
 
-* ``open_nofollow`` refuses a symlink or other reparse point (junction) at the
+* ``open_nofollow`` refuses a symlink or junction reparse point at the
   final component, checked before opening and again against the opened handle,
   so a link swapped in between the two checks is refused too. The error is the
   same ``ELOOP`` that ``O_NOFOLLOW`` raises on Linux.
@@ -49,7 +49,6 @@ import re
 import shutil
 import signal
 import stat
-import subprocess
 import time
 from pathlib import Path, PurePath
 
@@ -59,15 +58,29 @@ except ImportError:  # Windows
     fcntl = None
     import msvcrt
 
-__all__ = ["open_nofollow", "lock", "unlock", "fsync_directory", "home", "expanduser", "null_device", "kill_tree", "essential_environment", "posix_shell"]
+__all__ = ["open_nofollow", "lock", "unlock", "fsync_directory", "home", "expanduser", "null_device", "kill_tree", "essential_environment", "posix_shell", "shell_can_run"]
+
+#: The Windows branches below test this flag, not ``os.name``, so tests can
+#: exercise them on POSIX without patching ``os.name`` (which makes pathlib
+#: build WindowsPath objects that POSIX cannot instantiate).
+WINDOWS = os.name == "nt"
 
 _LOCK_OFFSET = 0x7FFFFFFF  # one byte past any realistic lock-file payload
 _RETRY_SECONDS = 0.01
 
 
+# Reparse points that redirect the path: symbolic links and junctions. Cloud
+# placeholders (OneDrive) and deduplicated files are reparse points too, but
+# they hold the file's own data and must still open.
+_LINK_REPARSE_TAGS = (0xA000000C, 0xA0000003)  # IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG_MOUNT_POINT
+
+
 def _is_link(info: os.stat_result) -> bool:
+    if stat.S_ISLNK(info.st_mode):
+        return True
     attributes = getattr(info, "st_file_attributes", 0)
-    return stat.S_ISLNK(info.st_mode) or bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    return (bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+            and getattr(info, "st_reparse_tag", 0) in _LINK_REPARSE_TAGS)
 
 
 def _refuse(path) -> OSError:
@@ -131,7 +144,7 @@ def unlock(fd: int) -> None:
 
 def fsync_directory(path) -> None:
     """Flush a directory entry (e.g. after ``os.replace``) where the platform supports it."""
-    if os.name == "nt":
+    if WINDOWS:
         return
     fd = os.open(path, os.O_RDONLY)
     try:
@@ -141,7 +154,7 @@ def fsync_directory(path) -> None:
 
 
 def _windows_home() -> str | None:
-    value = os.environ.get("HOME") if os.name == "nt" else None
+    value = os.environ.get("HOME") if WINDOWS else None
     if not value:
         return None
     msys = re.match(r"^/([A-Za-z])(?=/|$)", value)
@@ -167,16 +180,20 @@ def expanduser(path):
 
 def null_device(path):
     """``os.devnull`` for ``/dev/null`` on Windows; any other path, and every path on POSIX, unchanged."""
-    if os.name == "nt" and os.fspath(path).replace("\\", "/") == "/dev/null":
+    if WINDOWS and os.fspath(path).replace("\\", "/") == "/dev/null":
         return type(path)(os.devnull) if isinstance(path, PurePath) else os.devnull
     return path
 
 
 def kill_tree(pid: int) -> None:
     """Kill ``pid`` and its descendants (its process group on POSIX)."""
-    if os.name != "nt":
+    if not WINDOWS:
         os.killpg(pid, signal.SIGKILL)
         return
+    # Imported here: config imports this module, and a test that stands in a
+    # fake msvcrt would otherwise make subprocess import _winapi on POSIX.
+    import subprocess
+
     result = subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
                             capture_output=True, stdin=subprocess.DEVNULL)
     if result.returncode == 128:  # no such process
@@ -190,7 +207,7 @@ _WINDOWS_ESSENTIAL = ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT
 
 def essential_environment() -> dict[str, str]:
     """The variables a minimal child environment must keep on this platform (none on POSIX)."""
-    if os.name != "nt":
+    if not WINDOWS:
         return {}
     return {key: os.environ[key] for key in _WINDOWS_ESSENTIAL if key in os.environ}
 
@@ -220,13 +237,13 @@ def shell_can_run(program: str) -> bool:
     shebang), which ``which`` refuses for lacking a PATHEXT extension."""
     if shutil.which(program):
         return True
-    return (os.name == "nt" and os.path.dirname(program) != "" and os.path.isfile(program)
+    return (WINDOWS and os.path.dirname(program) != "" and os.path.isfile(program)
             and posix_shell() is not None)
 
 
 def posix_shell() -> str | None:
     """``/bin/sh`` on POSIX; Git for Windows' ``sh.exe`` on Windows, or None when Git is absent."""
-    if os.name != "nt":
+    if not WINDOWS:
         return "/bin/sh"
     for root in _git_install_roots():
         candidate = root / "usr" / "bin" / "sh.exe"

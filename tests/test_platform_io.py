@@ -6,6 +6,7 @@ import errno
 import os
 import stat
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -90,6 +91,18 @@ def test_open_nofollow_refuses_link_swapped_in_after_the_first_check(tmp_path, m
         os.fstat(opened[0])  # the descriptor of the refused open was closed
 
 
+@pytest.mark.parametrize("tag, is_link", [
+    (0xA000000C, True),   # IO_REPARSE_TAG_SYMLINK
+    (0xA0000003, True),   # IO_REPARSE_TAG_MOUNT_POINT (junction)
+    (0x9000001A, False),  # IO_REPARSE_TAG_CLOUD (OneDrive placeholder)
+    (0x80000013, False),  # IO_REPARSE_TAG_DEDUP
+])
+def test_only_redirecting_reparse_points_count_as_links(tag, is_link):
+    info = types.SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_reparse_tag=tag,
+                                 st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    assert platform_io._is_link(info) is is_link
+
+
 def test_lock_is_exclusive_between_descriptors_and_released_by_unlock(tmp_path):
     path = tmp_path / "x.lock"
     first = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -160,7 +173,7 @@ def test_paths_without_a_leading_tilde_are_unchanged(tmp_path, monkeypatch):
 
 
 def test_windows_reads_an_msys_HOME(monkeypatch):
-    monkeypatch.setattr(platform_io.os, "name", "nt")
+    monkeypatch.setattr(platform_io, "WINDOWS", True)
     monkeypatch.setenv("HOME", "/c/Users/me")
     assert platform_io.home() == Path("C:/Users/me")
     assert platform_io.expanduser("~/.kindex") == "C:/Users/me/.kindex"
@@ -170,7 +183,7 @@ def test_windows_reads_an_msys_HOME(monkeypatch):
 
 def test_unset_HOME_falls_back_to_the_platform_home(monkeypatch):
     monkeypatch.delenv("HOME", raising=False)
-    monkeypatch.setattr(platform_io.os, "name", "nt")
+    monkeypatch.setattr(platform_io, "WINDOWS", True)
     assert platform_io.home() == Path.home()
 
 
@@ -193,11 +206,11 @@ def test_kindex_resolves_home_only_through_platform_io():
 
 
 def test_null_device_maps_dev_null_on_windows_only(monkeypatch):
-    monkeypatch.setattr(platform_io.os, "name", "nt")
+    monkeypatch.setattr(platform_io, "WINDOWS", True)
     assert platform_io.null_device("/dev/null") == os.devnull
     assert platform_io.null_device(Path("/dev/null")) == Path(os.devnull)
     assert platform_io.null_device("config.yaml") == "config.yaml"
-    monkeypatch.setattr(platform_io.os, "name", "posix")
+    monkeypatch.setattr(platform_io, "WINDOWS", False)
     assert platform_io.null_device("/dev/null") == "/dev/null"
 
 
@@ -226,14 +239,14 @@ def _git_tree(root, *tools):
 
 
 def test_posix_shell_is_bin_sh_on_posix(monkeypatch):
-    monkeypatch.setattr(platform_io.os, "name", "posix")
+    monkeypatch.setattr(platform_io, "WINDOWS", False)
     assert platform_io.posix_shell() == "/bin/sh"
 
 
 @pytest.mark.parametrize("git", ["cmd/git.exe", "mingw64/bin/git.exe", "ucrt64/bin/git.exe"])
 def test_posix_shell_is_the_sh_of_the_git_on_path(tmp_path, monkeypatch, git):
     install = _git_tree(tmp_path / "Git", git, "usr/bin/sh.exe")
-    monkeypatch.setattr(platform_io.os, "name", "nt")
+    monkeypatch.setattr(platform_io, "WINDOWS", True)
     monkeypatch.setattr(platform_io.shutil, "which", lambda name: str(install / git) if name == "git" else None)
     monkeypatch.setitem(sys.modules, "winreg", _Registry())
     assert platform_io.posix_shell() == str((install / "usr/bin/sh.exe").resolve())
@@ -241,7 +254,7 @@ def test_posix_shell_is_the_sh_of_the_git_on_path(tmp_path, monkeypatch, git):
 
 def test_posix_shell_falls_back_to_the_git_install_record(tmp_path, monkeypatch):
     install = _git_tree(tmp_path / "Git", "usr/bin/sh.exe")
-    monkeypatch.setattr(platform_io.os, "name", "nt")
+    monkeypatch.setattr(platform_io, "WINDOWS", True)
     monkeypatch.setattr(platform_io.shutil, "which", lambda name: None)
     monkeypatch.setitem(sys.modules, "winreg", _Registry(install))
     assert platform_io.posix_shell() == str(install / "usr/bin/sh.exe")
@@ -252,13 +265,13 @@ def test_shell_can_run_a_script_by_path_that_which_refuses_on_windows(tmp_path, 
     script.write_text("#!/bin/sh\ncat\n")
     monkeypatch.setattr(platform_io.shutil, "which", lambda name: None)
     monkeypatch.setattr(platform_io, "posix_shell", lambda: "sh.exe")
-    monkeypatch.setattr(platform_io.os, "name", "nt")
+    monkeypatch.setattr(platform_io, "WINDOWS", True)
     assert platform_io.shell_can_run(str(script))
     assert not platform_io.shell_can_run("provider")  # a bare name still needs PATH
     assert not platform_io.shell_can_run(str(tmp_path / "missing"))
     monkeypatch.setattr(platform_io, "posix_shell", lambda: None)
     assert not platform_io.shell_can_run(str(script))  # cmd.exe cannot run it
-    monkeypatch.setattr(platform_io.os, "name", "posix")
+    monkeypatch.setattr(platform_io, "WINDOWS", False)
     monkeypatch.setattr(platform_io, "posix_shell", lambda: "/bin/sh")
     assert not platform_io.shell_can_run(str(script))  # POSIX keeps which's verdict
 
@@ -266,7 +279,7 @@ def test_shell_can_run_a_script_by_path_that_which_refuses_on_windows(tmp_path, 
 def test_posix_shell_never_takes_a_bare_sh_or_bash_from_path(tmp_path, monkeypatch):
     # WSL puts bash.exe in System32; only Git's own sh.exe qualifies.
     loose = _git_tree(tmp_path / "System32", "bash.exe", "sh.exe")
-    monkeypatch.setattr(platform_io.os, "name", "nt")
+    monkeypatch.setattr(platform_io, "WINDOWS", True)
     monkeypatch.setattr(platform_io.shutil, "which", lambda name: None if name == "git" else str(loose / f"{name}.exe"))
     monkeypatch.setitem(sys.modules, "winreg", _Registry())
     assert platform_io.posix_shell() is None
