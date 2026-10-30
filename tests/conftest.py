@@ -39,7 +39,7 @@ def hermetic_state_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def hermetic_user_config(tmp_path, monkeypatch):
+def hermetic_user_config(tmp_path_factory, monkeypatch):
     """Hide the developer's own Kindex configuration and profile selection.
 
     The user-level config paths are computed from HOME at import time, so a
@@ -49,8 +49,8 @@ def hermetic_user_config(tmp_path, monkeypatch):
     """
     from kindex import config
 
-    home = tmp_path / "hermetic-home"
-    home.mkdir()
+    # Outside tmp_path, which tests own and may list or create "home" in.
+    home = tmp_path_factory.mktemp("home")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
     # Ambient selection and routing from the developer's shell or host session.
